@@ -16,6 +16,8 @@ For Capacitor 5, use versions 1.x.
 
 For Capacitor 6, use versions 2.x.
 
+For Capacitor 7, use versions 3.x.
+
 ## Install
 
 ```bash
@@ -114,8 +116,8 @@ document.documentElement.style.setProperty('--ion-background-color', 'transparen
 * [`requestCameraPermission()`](#requestcamerapermission)
 * [`requestMicroPhonePermission()`](#requestmicrophonepermission)
 * [`isOpen()`](#isopen)
-* [`addListener('onPlayed', ...)`](#addlisteneronplayed)
-* [`addListener('onOrientationChanged', ...)`](#addlisteneronorientationchanged)
+* [`addListener('onPlayed', ...)`](#addlisteneronplayed-)
+* [`addListener('onOrientationChanged', ...)`](#addlisteneronorientationchanged-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
 * [Type Aliases](#type-aliases)
