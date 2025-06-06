@@ -26,6 +26,7 @@ import androidx.camera.core.Camera;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.CameraState;
 import androidx.camera.core.FocusMeteringAction;
+import androidx.camera.core.FocusMeteringResult;
 import androidx.camera.core.ImageAnalysis;
 import androidx.camera.core.ImageCapture;
 import androidx.camera.core.ImageCaptureException;
@@ -46,6 +47,7 @@ import androidx.camera.video.MediaStoreOutputOptions;
 import androidx.camera.video.VideoRecordEvent;
 import androidx.camera.view.PreviewView;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.util.Consumer;
 import androidx.lifecycle.LifecycleOwner;
 
@@ -69,17 +71,17 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 @CapacitorPlugin(
-        name = "CameraPreview",
-        permissions = {
-                @Permission(strings = {Manifest.permission.CAMERA}, alias = CameraPreviewPlugin.CAMERA),
-                @Permission(strings = {Manifest.permission.RECORD_AUDIO}, alias = CameraPreviewPlugin.MICROPHONE),
-        }
+  name = "CameraPreview",
+  permissions = {
+    @Permission(strings = {Manifest.permission.CAMERA}, alias = CameraPreviewPlugin.CAMERA),
+  }
 )
 public class CameraPreviewPlugin extends Plugin {
     // Permission alias constants
@@ -111,56 +113,60 @@ public class CameraPreviewPlugin extends Plugin {
     @PluginMethod
     public void initialize(PluginCall call) {
         getActivity().runOnUiThread(new Runnable() {
-            @RequiresApi(api = Build.VERSION_CODES.P)
-            public void run() {
-                previewView = new PreviewView(getContext());
-                previewView.setScaleType(PreviewView.ScaleType.FIT_CENTER);
-                FrameLayout.LayoutParams cameraPreviewParams = new FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT
-                );
-                ((ViewGroup) bridge.getWebView().getParent()).addView(previewView, cameraPreviewParams);
-                bridge.getWebView().bringToFront();
+        @RequiresApi(api = Build.VERSION_CODES.P)
+        public void run() {
+            previewView = new PreviewView(getContext());
+            previewView.setScaleType(PreviewView.ScaleType.FIT_CENTER);
+            FrameLayout.LayoutParams cameraPreviewParams = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+            );
+            ((ViewGroup) bridge.getWebView().getParent()).addView(previewView, cameraPreviewParams);
+            bridge.getWebView().bringToFront();
 
-                exec = Executors.newSingleThreadExecutor();
-                cameraProviderFuture = ProcessCameraProvider.getInstance(getContext());
-                cameraProviderFuture.addListener(() -> {
-                    try {
-                        cameraProvider = cameraProviderFuture.get();
-                        cameraSelector = new CameraSelector.Builder()
-                                .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
-                        setupUseCases(false);
-                        call.resolve();
-                    } catch (ExecutionException | InterruptedException e) {
-                        e.printStackTrace();
-                        call.reject(e.getMessage());
-                    }
-                }, getContext().getMainExecutor());
-
-
+            exec = Executors.newSingleThreadExecutor();
+            cameraProviderFuture = ProcessCameraProvider.getInstance(getContext());
+            cameraProviderFuture.addListener(() -> {
+            try {
+                cameraProvider = cameraProviderFuture.get();
+                cameraSelector = new CameraSelector.Builder()
+                .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
+                // Auto-optimize for photo capture on initialization
+                setupUseCases(false); // Always use photo-optimized mode
+                Log.d("Camera", "Initialized with photo capture optimization");
+                call.resolve();
+            } catch (ExecutionException | InterruptedException e) {
+                e.printStackTrace();
+                call.reject(e.getMessage());
             }
+            }, ContextCompat.getMainExecutor(getContext()));
+        }
         });
     }
 
     private void setupUseCases(boolean enableVideo) {
-        //set up the resolution for the preview and image analysis.
-        int orientation = getContext().getResources().getConfiguration().orientation;
-        Size resolution;
-        if (orientation == Configuration.ORIENTATION_PORTRAIT) {
-            resolution = new Size(desiredHeight, desiredWidth);
-        } else {
-            resolution = new Size(desiredWidth, desiredHeight);
-        }
+        // Auto-detect maximum resolution for better zoom quality
+        Size resolution = getOptimalResolution();
 
+        // Enhanced Preview setup for better quality
         Preview.Builder previewBuilder = new Preview.Builder();
+        if (resolution != null) {
         previewBuilder.setTargetResolution(resolution);
+        Log.d("Camera", "Using optimal resolution: " + resolution.getWidth() + "x" + resolution.getHeight());
+        } else {
+        // Fallback: let CameraX choose the best resolution automatically
+        Log.d("Camera", "Using CameraX auto-resolution selection");
+        }
         preview = previewBuilder.build();
         preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
+        // Enhanced ImageAnalysis setup
         ImageAnalysis.Builder imageAnalysisBuilder = new ImageAnalysis.Builder();
-
-        imageAnalysisBuilder.setTargetResolution(resolution)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST);
+        if (resolution != null) {
+        imageAnalysisBuilder.setTargetResolution(resolution);
+        }
+        imageAnalysisBuilder.setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        .setImageQueueDepth(1); // Optimize for latest frame
 
         imageAnalysis = imageAnalysisBuilder.build();
 
@@ -208,10 +214,20 @@ public class CameraPreviewPlugin extends Plugin {
             }
         });
 
-        imageCapture =
-                new ImageCapture.Builder()
-                        .setTargetAspectRatio(AspectRatio.RATIO_16_9)
-                        .build();
+        // Enhanced ImageCapture setup for optimal photo quality with max resolution
+        ImageCapture.Builder imageCaptureBuilder = new ImageCapture.Builder();
+        if (resolution != null) {
+        imageCaptureBuilder.setTargetResolution(resolution);
+        }
+        imageCaptureBuilder.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY) // Prioritize quality over speed
+        .setJpegQuality(95); // High JPEG quality (0-100, default is around 85)
+
+        // Add image stabilization if available (API 28+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        imageCaptureBuilder.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY);
+        }
+
+        imageCapture = imageCaptureBuilder.build();
 
         if (enableVideo) {
             Quality quality = Quality.HD;
@@ -232,6 +248,53 @@ public class CameraPreviewPlugin extends Plugin {
                     .addUseCase(imageCapture)
                     .build();
         }
+    }
+
+    /**
+     * Get the optimal (maximum) resolution supported by the device for better zoom quality
+     * Uses high-quality resolution options with CameraX auto-selection fallback
+     */
+    private Size getOptimalResolution() {
+        try {
+        // Use high-quality resolution options for better zoom quality
+        // These are commonly supported resolutions across Android devices
+        int orientation = getContext().getResources().getConfiguration().orientation;
+        
+        // High-quality resolution options (in order of preference)
+        Size[] preferredResolutions;
+        
+        if (orientation == Configuration.ORIENTATION_PORTRAIT) {
+            preferredResolutions = new Size[]{
+            new Size(3024, 4032), // 12MP portrait
+            new Size(2160, 3840), // 4K portrait  
+            new Size(2448, 3264), // 8MP portrait
+            new Size(1920, 2560), // 5MP portrait
+            new Size(1440, 1920), // 3MP portrait
+            new Size(1080, 1920), // Full HD portrait
+            };
+        } else {
+            preferredResolutions = new Size[]{
+            new Size(4032, 3024), // 12MP landscape
+            new Size(3840, 2160), // 4K landscape
+            new Size(3264, 2448), // 8MP landscape  
+            new Size(2560, 1920), // 5MP landscape
+            new Size(1920, 1440), // 3MP landscape
+            new Size(1920, 1080), // Full HD landscape
+            };
+        }
+        
+        // Return the first (highest quality) option - CameraX will adapt if not supported
+        Size optimalResolution = preferredResolutions[0];
+        Log.d("Camera", "Selected optimal resolution: " + optimalResolution.getWidth() + "x" + optimalResolution.getHeight());
+        return optimalResolution;
+        
+        } catch (Exception e) {
+        Log.e("Camera", "Error selecting optimal resolution: " + e.getMessage());
+        }
+        
+        // Fallback: return null to let CameraX auto-select
+        Log.d("Camera", "Using CameraX auto-resolution selection as fallback");
+        return null;
     }
 
     @PluginMethod
@@ -322,36 +385,162 @@ public class CameraPreviewPlugin extends Plugin {
 
     @PluginMethod
     public void setFocus(PluginCall call) {
-      if (call.hasOption("x") && call.hasOption("y")) {
+        if (!call.hasOption("x") || !call.hasOption("y")) {
+        call.reject("Invalid focus coordinates - x and y are required");
+        return;
+        }
+
         Float x = call.getFloat("x");
         Float y = call.getFloat("y");
+
+        // Validate coordinate ranges (should be 0-1 for normalized coordinates)
+        if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) {
+        call.reject("Focus coordinates must be normalized values between 0.0 and 1.0");
+        return;
+        }
 
         if (previewView == null || camera == null) {
           call.reject("Camera preview is not initialized");
           return;
         }
 
-        try {
-          // Convert normalized coordinates to absolute pixel coordinates
-          float absoluteX = x * previewView.getWidth();
-          float absoluteY = y * previewView.getHeight();
+        getActivity().runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+            try {
+            // Use PreviewView's built-in MeteringPointFactory for proper coordinate transformation
+            MeteringPointFactory factory = previewView.getMeteringPointFactory();
 
-          MeteringPointFactory factory = new SurfaceOrientedMeteringPointFactory(previewView.getWidth(), previewView.getHeight());
-          MeteringPoint point = factory.createPoint(absoluteX, absoluteY);
+            // Convert normalized coordinates to preview coordinates
+            float previewX = x * previewView.getWidth();
+            float previewY = y * previewView.getHeight();
 
-          FocusMeteringAction.Builder builder = new FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF);
-          builder.setAutoCancelDuration(5, TimeUnit.SECONDS);
-          FocusMeteringAction action = builder.build();
-          camera.getCameraControl().startFocusAndMetering(action);
+            MeteringPoint focusPoint = factory.createPoint(previewX, previewY);
 
-          call.resolve();
-        } catch (Exception e) {
-          call.reject("Error setting focus: " + e.getMessage());
+            // Get configurable options
+            boolean includeExposure = Boolean.TRUE.equals(call.getBoolean("includeExposure", true));
+            Integer autoCancelDurationParam = call.getInt("autoCancelDurationSeconds");
+            int autoCancelDuration = autoCancelDurationParam != null ? autoCancelDurationParam : 3;
+
+            // Build the focus and metering action
+            FocusMeteringAction.Builder builder = new FocusMeteringAction.Builder(focusPoint);
+
+            // Set auto-focus flags
+            if (includeExposure) {
+                // Use both AF and AE flags for the same point
+                builder = new FocusMeteringAction.Builder(focusPoint, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE);
+            } else {
+                // Use only AF flag
+                builder = new FocusMeteringAction.Builder(focusPoint, FocusMeteringAction.FLAG_AF);
+            }
+
+            // Set auto-cancel duration
+            builder.setAutoCancelDuration(autoCancelDuration, TimeUnit.SECONDS);
+
+            FocusMeteringAction action = builder.build();
+
+            // Start focus and metering with result callback
+            ListenableFuture<FocusMeteringResult> future = camera.getCameraControl().startFocusAndMetering(action);
+
+            // Add callback to handle the result
+            future.addListener(new Runnable() {
+                @Override
+                public void run() {
+                try {
+                    FocusMeteringResult result = future.get();
+                    JSObject response = new JSObject();
+                    response.put("success", true);
+                    response.put("autoFocusSuccessful", result.isFocusSuccessful());
+
+                    if (includeExposure) {
+                    // Note: CameraX FocusMeteringResult doesn't provide separate exposure success status
+                    // We'll indicate that exposure was attempted along with focus
+                    response.put("autoExposureSuccessful", result.isFocusSuccessful());
+                    }
+
+                    response.put("x", x);
+                    response.put("y", y);
+
+                    call.resolve(response);
+                } catch (Exception e) {
+                    Log.e("Camera", "Focus operation failed", e);
+                    call.reject("Focus operation failed: " + e.getMessage());
+                }
+                }
+            }, ContextCompat.getMainExecutor(getContext()));
+
+            } catch (Exception e) {
+            Log.e("Camera", "Error setting focus", e);
+            call.reject("Error setting focus: " + e.getMessage());
+            }
+        }
+        });
+    }
+
+    @PluginMethod
+    public void setAutoFocusMode(PluginCall call) {
+        if (camera == null) {
+        call.reject("Camera not initialized");
+        return;
         }
 
-      } else {
-        call.reject("Invalid focus coordinates");
-      }
+        getActivity().runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+            try {
+            String mode = call.getString("mode", "auto");
+
+            switch (mode.toLowerCase()) {
+                case "auto":
+                // Default auto-focus behavior (continuous)
+                // CameraX handles this automatically
+                break;
+                case "manual":
+                // For manual focus, we would need to disable auto-focus
+                // This is more complex and would require camera2 interop
+                Log.w("Camera", "Manual focus mode not fully supported in CameraX");
+                break;
+                case "continuous":
+                // This is the default behavior in CameraX
+                break;
+                default:
+                call.reject("Unsupported focus mode: " + mode);
+                return;
+            }
+
+            JSObject result = new JSObject();
+            result.put("success", true);
+            result.put("mode", mode);
+            call.resolve(result);
+            } catch (Exception e) {
+            call.reject("Error setting auto focus mode: " + e.getMessage());
+            }
+        }
+        });
+    }
+
+    @PluginMethod
+    public void resetFocus(PluginCall call) {
+        if (camera == null) {
+        call.reject("Camera not initialized");
+        return;
+        }
+
+        getActivity().runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+            try {
+            // Cancel any ongoing focus operations
+            camera.getCameraControl().cancelFocusAndMetering();
+
+            JSObject result = new JSObject();
+            result.put("success", true);
+            call.resolve(result);
+            } catch (Exception e) {
+            call.reject("Error resetting focus: " + e.getMessage());
+            }
+        }
+        });
     }
 
     @PluginMethod

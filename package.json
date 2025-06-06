@@ -1,6 +1,6 @@
 {
   "name": "capacitor-plugin-camera-forked",
-  "version": "3.0.9",
+  "version": "3.0.10",
   "description": "A capacitor camera plugin - A custom Capacitor camera plugin with additional features.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -13,7 +13,7 @@
     "ios/Plugin/",
     "CapacitorPluginCameraForked.podspec"
   ],
-  "author": "Lihang Xu + Addons",
+  "author": "Lihang Xu + Modified",
   "license": "MIT",
   "repository": {
     "type": "git",
