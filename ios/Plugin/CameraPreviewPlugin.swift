@@ -32,11 +32,23 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     var lastFocusTime: Date = Date()
     private let focusThrottleInterval: TimeInterval = 0.5
     @objc func initialize(_ call: CAPPluginCall) {
+        // Check camera permission status first
+        let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        
+        if authStatus == .denied || authStatus == .restricted {
+            call.reject("Camera permission denied")
+            return
+        }
+        
         // Initialize a camera view for previewing video.
         DispatchQueue.main.sync {
             self.previewView = PreviewView.init(frame: (bridge?.viewController?.view.bounds)!)
             self.webView!.superview!.insertSubview(self.previewView, belowSubview: self.webView!)
-            initializeCaptureSession(enableVideoRecording: false)
+            
+            // Only initialize capture session if permission is granted
+            if authStatus == .authorized {
+                initializeCaptureSession(enableVideoRecording: false)
+            }
             
             // Add tap gesture for focus
             let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTapToFocus(_:)))
@@ -812,11 +824,27 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     @objc func requestCameraPermission(_ call: CAPPluginCall) {
-        call.resolve()
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+            DispatchQueue.main.async {
+                if granted {
+                    // Initialize capture session now that permission is granted
+                    if self.previewView != nil && self.captureSession == nil {
+                        self.initializeCaptureSession(enableVideoRecording: false)
+                    }
+                    call.resolve(["granted": true])
+                } else {
+                    call.resolve(["granted": false])
+                }
+            }
+        }
     }
 
     @objc func requestMicroPhonePermission(_ call: CAPPluginCall) {
-        call.resolve()
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            DispatchQueue.main.async {
+                call.resolve(["granted": granted])
+            }
+        }
     }
     
     @objc func isOpen(_ call: CAPPluginCall) {
