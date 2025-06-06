@@ -26,12 +26,21 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     var videoInput:AVCaptureDeviceInput!
     var scanRegion:ScanRegion! = nil
     var lastValidOrientation = "portrait"
+    var focusView: UIView?
+    var isFocusAnimating = false
+    var focusCompletionTimer: Timer?
+    var lastFocusTime: Date = Date()
+    private let focusThrottleInterval: TimeInterval = 0.5
     @objc func initialize(_ call: CAPPluginCall) {
         // Initialize a camera view for previewing video.
         DispatchQueue.main.sync {
             self.previewView = PreviewView.init(frame: (bridge?.viewController?.view.bounds)!)
             self.webView!.superview!.insertSubview(self.previewView, belowSubview: self.webView!)
             initializeCaptureSession(enableVideoRecording: false)
+            
+            // Add tap gesture for focus
+            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTapToFocus(_:)))
+            self.previewView.addGestureRecognizer(tapGesture)
         }
         call.resolve()
     }
@@ -146,6 +155,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             // If the input can be added, add it to the session.
             if self.captureSession.canAddInput(videoInput) {
                 self.captureSession.addInput(videoInput)
+                
+                // Configure camera device for optimal focus performance
+                try self.configureCameraForOptimalFocus(device: videoDevice)
+                
                 self.previewView.videoPreviewLayer.session = self.captureSession
                 self.previewView.videoPreviewLayer.videoGravity = AVLayerVideoGravity.resizeAspectFill
                 
@@ -163,7 +176,12 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 
                 self.photoOutput = AVCapturePhotoOutput()
                 self.photoOutput.isHighResolutionCaptureEnabled = true
-                //self.photoOutput.
+                
+                // Configure photo output for better focus
+                if #available(iOS 13.0, *) {
+                    self.photoOutput.maxPhotoQualityPrioritization = .quality
+                }
+                
                 if self.captureSession.canAddOutput(self.photoOutput) {
                     self.captureSession.addOutput(photoOutput)
                 }
@@ -189,13 +207,100 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             print(error)
         }
     }
+    
+    private func configureCameraForOptimalFocus(device: AVCaptureDevice) throws {
+        try device.lockForConfiguration()
+        
+        // Set optimal focus mode for continuous operation
+        if device.isFocusModeSupported(.continuousAutoFocus) {
+            device.focusMode = .continuousAutoFocus
+        }
+        
+        // Set optimal exposure mode
+        if device.isExposureModeSupported(.continuousAutoExposure) {
+            device.exposureMode = .continuousAutoExposure
+        }
+        
+        // Enable subject area change monitoring for responsive focus
+        device.isSubjectAreaChangeMonitoringEnabled = true
+        
+        // Configure white balance for better color accuracy
+        if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+        }
+        
+        // Set focus range restriction if supported (helps with faster focus)
+        if device.isAutoFocusRangeRestrictionSupported {
+            device.autoFocusRangeRestriction = .none // Allow full range for versatility
+        }
+        
+        // Enable smooth auto focus if available (iOS 7+)
+        if device.isSmoothAutoFocusSupported {
+            device.isSmoothAutoFocusEnabled = true
+        }
+        
+        device.unlockForConfiguration()
+    }
+    
     func takePhotoWithAVFoundation(){
         //self.captureSession.sessionPreset = AVCaptureSession.Preset.hd4K3840x2160
         let photoSettings: AVCapturePhotoSettings
-        photoSettings = AVCapturePhotoSettings()
+        
+        // Use HEIF format if available for better quality
+        if #available(iOS 11.0, *), self.photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+            photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+        } else {
+            photoSettings = AVCapturePhotoSettings()
+        }
+        
         photoSettings.isHighResolutionPhotoEnabled = true
         
-        self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+        // Enable auto-focus before capture for better focus accuracy
+        if #available(iOS 11.0, *) {
+            photoSettings.photoQualityPrioritization = .quality
+        }
+        
+        // Enable auto-focus and auto-exposure for optimal capture
+        if #available(iOS 14.1, *) {
+            photoSettings.isAutoContentAwareDistortionCorrectionEnabled = true
+        }
+        
+        // Trigger focus before capture if the device supports it
+        let device = self.videoInput.device
+        if device.isFocusModeSupported(.autoFocus) {
+            do {
+                try device.lockForConfiguration()
+                
+                // Temporarily switch to autoFocus for the photo capture
+                let previousFocusMode = device.focusMode
+                device.focusMode = .autoFocus
+                
+                device.unlockForConfiguration()
+                
+                // Wait a brief moment for focus to settle, then capture
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+                    
+                    // Restore previous focus mode after a short delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        do {
+                            try device.lockForConfiguration()
+                            device.focusMode = previousFocusMode
+                            device.unlockForConfiguration()
+                        } catch {
+                            print("Could not restore focus mode: \(error)")
+                        }
+                    }
+                }
+            } catch {
+                // If focus configuration fails, capture anyway
+                print("Could not configure focus for capture: \(error)")
+                self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+            }
+        } else {
+            // Capture immediately if auto focus isn't supported
+            self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+        }
     }
     
     public func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
@@ -261,15 +366,6 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 print("Failed to create bitmap from image.")
                 return
             }
-            
-            // NEW CODE
-            // var degree = 0;
-            // if lastValidOrientation == "portrait" {
-            //     degree = 90
-            // }else if lastValidOrientation == "landscapeLeft" {
-            //     degree = 180
-            // }
-            // END OF NEW CODE
 
             //print("lastValidOrientation: ",lastValidOrientation)
             //print("degree: ",degree)
@@ -545,47 +641,174 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     @objc func setFocus(_ call: CAPPluginCall) {
-        // Validate coordinates (must be normalized 0.0-1.0)
-        guard let x = call.getFloat("x"), 
-            let y = call.getFloat("y"),
-            x >= 0.0 && x <= 1.0,
-            y >= 0.0 && y <= 1.0 else {
+        if let x = call.getFloat("x"), let y = call.getFloat("y"),
+           x >= 0.0 && x <= 1.0, y >= 0.0 && y <= 1.0 {
+            let point = CGPoint(x: CGFloat(x), y: CGFloat(y))
+            
+            // Check if focus is currently animating and reset if stuck
+            if isFocusAnimating {
+                resetFocusIfStuck()
+            }
+            
+            focusWithPoint(point: point)
+            
+            // Calculate the point in the preview layer's coordinate space
+            let previewPoint = CGPoint(x: point.x * previewView.bounds.width,
+                                     y: point.y * previewView.bounds.height)
+            showFocusView(at: previewPoint)
+            call.resolve()
+        } else {
             call.reject("Invalid coordinates. Provide normalized x,y values (0.0-1.0)")
+        }
+    }
+    
+    private func resetFocusIfStuck() {
+        // Remove any existing focus indicator
+        focusView?.removeFromSuperview()
+        focusCompletionTimer?.invalidate()
+        isFocusAnimating = false
+        
+        // Reset focus to continuous mode
+        let device = self.videoInput.device
+        do {
+            try device.lockForConfiguration()
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            device.unlockForConfiguration()
+        } catch {
+            print("Could not reset focus: \(error)")
+        }
+    }
+    
+    @objc func resetFocus(_ call: CAPPluginCall) {
+        resetFocusIfStuck()
+        
+        // Reset to center focus
+        let centerPoint = CGPoint(x: 0.5, y: 0.5)
+        focusWithPoint(point: centerPoint)
+        
+        call.resolve()
+    }
+    
+    @objc func handleTapToFocus(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: self.previewView)
+        let convertedPoint = self.previewView.videoPreviewLayer.captureDevicePointConverted(fromLayerPoint: location)
+        
+        focusWithPoint(point: convertedPoint)
+        showFocusView(at: location)
+    }
+    
+    func focusWithPoint(point: CGPoint) {
+        let device = self.videoInput.device
+        
+        let now = Date()
+        if now.timeIntervalSince(lastFocusTime) < focusThrottleInterval {
             return
         }
-
-        let device = videoInput.device
+        lastFocusTime = now
         
         do {
             try device.lockForConfiguration()
             
-            // 1. Check if focus point is supported
-            guard device.isFocusPointOfInterestSupported else {
-                device.unlockForConfiguration()
-                call.reject("Focus point of interest not supported on this device")
-                return
+            focusCompletionTimer?.invalidate()
+            
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = point
+                
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                } else if device.isFocusModeSupported(.autoFocus) {
+                    device.focusMode = .autoFocus
+                } else {
+                    device.focusMode = .locked
+                }
+                
+                if device.focusMode == .autoFocus {
+                    NotificationCenter.default.addObserver(
+                        self,
+                        selector: #selector(subjectAreaDidChange),
+                        name: .AVCaptureDeviceSubjectAreaDidChange,
+                        object: device
+                    )
+                }
             }
             
-            // 2. Set focus point
-            device.focusPointOfInterest = CGPoint(x: CGFloat(x), y: CGFloat(y))
-            // 3. Set focus mode (choose one supported by your use case)
-            if device.isFocusModeSupported(.continuousAutoFocus) {
-                device.focusMode = .continuousAutoFocus
-            } else if device.isFocusModeSupported(.autoFocus) {
-                device.focusMode = .autoFocus
-            } else {
-                call.reject("No supported focus mode available")
-                return
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = point
+                
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                } else if device.isExposureModeSupported(.autoExpose) {
+                    device.exposureMode = .autoExpose
+                }
             }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                device.unlockForConfiguration()
+            
+            device.isSubjectAreaChangeMonitoringEnabled = true
+            
+            device.unlockForConfiguration()
+            
+            focusCompletionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.hideFocusIndicatorWithCompletion()
+                }
             }
-
-            call.resolve()            
+            
         } catch {
-            call.reject("Failed to lock device for configuration: \(error.localizedDescription)")
+            print("Could not focus: \(error.localizedDescription)")
         }
+    }
+    
+    @objc private func subjectAreaDidChange(notification: NSNotification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.hideFocusIndicatorWithCompletion()
+        }
+        
+        NotificationCenter.default.removeObserver(self, name: .AVCaptureDeviceSubjectAreaDidChange, object: notification.object)
+    }
+    
+    private func hideFocusIndicatorWithCompletion() {
+        guard let focusView = self.focusView else { return }
+        
+        UIView.animate(withDuration: 0.2, animations: {
+            focusView.alpha = 0.0
+            focusView.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+        }) { _ in
+            focusView.removeFromSuperview()
+            focusView.transform = CGAffineTransform.identity
+            self.isFocusAnimating = false
+        }
+    }
+    
+    func showFocusView(at point: CGPoint) {
+        if isFocusAnimating {
+            self.focusView?.removeFromSuperview()
+            focusCompletionTimer?.invalidate()
+        }
+        
+        // Create focus view if needed - but make it invisible
+        if self.focusView == nil {
+            self.focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
+            // Make the focus view completely transparent
+            self.focusView?.layer.borderColor = UIColor.clear.cgColor
+            self.focusView?.layer.borderWidth = 0.0
+            self.focusView?.layer.cornerRadius = 40
+            self.focusView?.backgroundColor = .clear
+            self.focusView?.alpha = 0.0
+            
+            // Remove the inner circle to make it completely invisible
+            // No inner circle added
+        }
+        
+        self.focusView?.center = point
+        self.focusView?.alpha = 0.0  // Keep invisible
+        self.focusView?.transform = CGAffineTransform.identity
+        self.previewView.addSubview(self.focusView!)
+        
+        self.isFocusAnimating = true
+        
+        // Skip the animation since the view is invisible
+        // Focus functionality still works, just no visual feedback
     }
     
     @objc func requestCameraPermission(_ call: CAPPluginCall) {
@@ -686,6 +909,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         call.keepAlive = true
         takePhotoCall = call
         takePhotoWithAVFoundation()
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        focusCompletionTimer?.invalidate()
     }
     
 }
