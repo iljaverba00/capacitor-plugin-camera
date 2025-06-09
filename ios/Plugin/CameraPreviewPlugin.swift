@@ -31,6 +31,7 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     var focusCompletionTimer: Timer?
     var lastFocusTime: Date = Date()
     private let focusThrottleInterval: TimeInterval = 0.5
+    var currentCameraDevice: AVCaptureDevice?
     @objc func initialize(_ call: CAPPluginCall) {
         // Check camera permission status first
         let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
@@ -149,8 +150,8 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         // Create the capture session.
         self.captureSession = AVCaptureSession()
 
-        // Find the default audio device.
-        guard let videoDevice = AVCaptureDevice.default(for: .video) else { return }
+        // Find the best available camera device (prefer multi-camera systems)
+        guard let videoDevice = getBestAvailableCameraDevice() else { return }
         if enableVideoRecording {
             let microphone = AVCaptureDevice.default(for: AVMediaType.audio)
             if microphone != nil {
@@ -168,7 +169,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             if self.captureSession.canAddInput(videoInput) {
                 self.captureSession.addInput(videoInput)
                 
-                // Configure camera device for optimal focus performance
+                // Set current camera device
+                self.currentCameraDevice = videoDevice
+                
+                // Configure camera device for optimal focus performance (both close and far objects)
                 try self.configureCameraForOptimalFocus(device: videoDevice)
                 
                 self.previewView.videoPreviewLayer.session = self.captureSession
@@ -241,14 +245,27 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             device.whiteBalanceMode = .continuousAutoWhiteBalance
         }
         
-        // Set focus range restriction if supported (helps with faster focus)
+        // Allow full focus range for both near and far objects
         if device.isAutoFocusRangeRestrictionSupported {
-            device.autoFocusRangeRestriction = .none // Allow full range for versatility
+            device.autoFocusRangeRestriction = .none
         }
         
         // Enable smooth auto focus if available (iOS 7+)
         if device.isSmoothAutoFocusSupported {
             device.isSmoothAutoFocusEnabled = true
+        }
+        
+        // Configure for macro focus if supported (iOS 13.0+)
+        if #available(iOS 13.0, *) {
+            if device.isAutoFocusRangeRestrictionSupported {
+                // Set to none to allow both macro and normal focus ranges
+                device.autoFocusRangeRestriction = .none
+            }
+        }
+        
+        // Enable low light boost for better focus in challenging conditions
+        if device.isLowLightBoostSupported {
+            device.automaticallyEnablesLowLightBoostWhenAvailable = true
         }
         
         device.unlockForConfiguration()
@@ -277,30 +294,44 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             photoSettings.isAutoContentAwareDistortionCorrectionEnabled = true
         }
         
-        // Trigger focus before capture if the device supports it
+        // Enhanced focus before capture for better close-up performance
         let device = self.videoInput.device
         if device.isFocusModeSupported(.autoFocus) {
             do {
                 try device.lockForConfiguration()
                 
-                // Temporarily switch to autoFocus for the photo capture
+                // Store previous settings
                 let previousFocusMode = device.focusMode
+                let previousExposureMode = device.exposureMode
+                
+                // Configure for optimal photo capture
                 device.focusMode = .autoFocus
+                
+                // Ensure full focus range for close objects
+                if device.isAutoFocusRangeRestrictionSupported {
+                    device.autoFocusRangeRestriction = .none
+                }
+                
+                // Set exposure mode for photo capture
+                if device.isExposureModeSupported(.autoExpose) {
+                    device.exposureMode = .autoExpose
+                }
                 
                 device.unlockForConfiguration()
                 
-                // Wait a brief moment for focus to settle, then capture
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                // Wait longer for focus to settle, especially for close objects
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
                     
-                    // Restore previous focus mode after a short delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    // Restore previous settings after capture
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                         do {
                             try device.lockForConfiguration()
                             device.focusMode = previousFocusMode
+                            device.exposureMode = previousExposureMode
                             device.unlockForConfiguration()
                         } catch {
-                            print("Could not restore focus mode: \(error)")
+                            print("Could not restore camera settings: \(error)")
                         }
                     }
                 }
@@ -366,7 +397,6 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 getResolutionCall.resolve(ret)
                 getResolutionCall = nil
             }
-            
         }
         if takeSnapshotCall != nil || saveFrameCall != nil {
             guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
@@ -516,6 +546,13 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             let videoDevice = captureDevice(with: AVCaptureDevice.Position.back)
             self.videoInput = try? AVCaptureDeviceInput(device: videoDevice!)
             self.captureSession.addInput(self.videoInput)
+            
+            // Configure focus for the new camera
+            if let device = videoDevice {
+                try? configureCameraForOptimalFocus(device: device)
+                self.currentCameraDevice = device
+            }
+            
             facingBack = true
         }
         if cameraID == "Front-Facing Camera" && facingBack == true {
@@ -524,6 +561,13 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             let videoDevice = captureDevice(with: AVCaptureDevice.Position.front)
             self.videoInput = try? AVCaptureDeviceInput(device: videoDevice!)
             self.captureSession.addInput(self.videoInput)
+            
+            // Configure focus for the new camera
+            if let device = videoDevice {
+                try? configureCameraForOptimalFocus(device: device)
+                self.currentCameraDevice = device
+            }
+            
             facingBack = false
         }
         if isRunning {
@@ -614,9 +658,43 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     func captureDevice(with position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+        // Enhanced device discovery including all modern camera types
+        var deviceTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInWideAngleCamera,
+            .builtInTelephotoCamera,
+            .builtInDualCamera
+        ]
+        
+        // Add newer device types for iOS 13+
+        if #available(iOS 13.0, *) {
+            deviceTypes.append(.builtInUltraWideCamera)
+            deviceTypes.append(.builtInDualWideCamera)
+            deviceTypes.append(.builtInTripleCamera)
+        }
+        
+        // Add macro camera for iOS 15+
+        if #available(iOS 15.4, *) {
+            deviceTypes.append(.builtInLiDARDepthCamera)
+        }
 
-        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: [ .builtInWideAngleCamera, .builtInMicrophone, .builtInDualCamera, .builtInTelephotoCamera ], mediaType: AVMediaType.video, position: .unspecified).devices
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: deviceTypes,
+            mediaType: AVMediaType.video,
+            position: .unspecified
+        ).devices
 
+        // Prefer newer multi-camera systems first
+        for device in devices {
+            if device.position == position {
+                if #available(iOS 13.0, *) {
+                    if device.deviceType == .builtInTripleCamera || device.deviceType == .builtInDualWideCamera {
+                        return device
+                    }
+                }
+            }
+        }
+        
+        // Fallback to any available camera with the specified position
         for device in devices {
             if device.position == position {
                 return device
@@ -624,6 +702,53 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         }
 
         return nil
+    }
+    
+
+    
+    private func getBestAvailableCameraDevice() -> AVCaptureDevice? {
+        let position: AVCaptureDevice.Position = facingBack ? .back : .front
+        
+        // Preferred camera types in order
+        let preferredTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera,      // Best - has all cameras
+            .builtInDualWideCamera,    // Good - has Ultra Wide + Wide
+            .builtInDualCamera,        // OK - has Wide + Telephoto
+            .builtInWideAngleCamera    // Fallback - standard camera
+        ]
+        
+        let allDeviceTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera,
+            .builtInDualWideCamera,
+            .builtInDualCamera,
+            .builtInWideAngleCamera,
+            .builtInTelephotoCamera,
+            .builtInUltraWideCamera
+        ]
+        
+        let devices = AVCaptureDevice.DiscoverySession(
+            deviceTypes: allDeviceTypes,
+            mediaType: AVMediaType.video,
+            position: .unspecified
+        ).devices
+        
+        // Try to find preferred camera types first
+        for preferredType in preferredTypes {
+            for device in devices {
+                if device.position == position && device.deviceType == preferredType {
+                    return device
+                }
+            }
+        }
+        
+        // Fallback to any available camera
+        for device in devices {
+            if device.position == position {
+                return device
+            }
+        }
+        
+        return AVCaptureDevice.default(for: .video)
     }
     
     @objc func setScanRegion(_ call: CAPPluginCall) {
@@ -728,37 +853,46 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             if device.isFocusPointOfInterestSupported {
                 device.focusPointOfInterest = point
                 
-                if device.isFocusModeSupported(.continuousAutoFocus) {
-                    device.focusMode = .continuousAutoFocus
-                } else if device.isFocusModeSupported(.autoFocus) {
+                // Use autoFocus for more aggressive focusing on specific points
+                if device.isFocusModeSupported(.autoFocus) {
                     device.focusMode = .autoFocus
-                } else {
-                    device.focusMode = .locked
-                }
-                
-                if device.focusMode == .autoFocus {
+                    
+                    // Set up observer for focus completion
                     NotificationCenter.default.addObserver(
                         self,
                         selector: #selector(subjectAreaDidChange),
                         name: .AVCaptureDeviceSubjectAreaDidChange,
                         object: device
                     )
+                } else if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
                 }
             }
             
             if device.isExposurePointOfInterestSupported {
                 device.exposurePointOfInterest = point
                 
-                if device.isExposureModeSupported(.continuousAutoExposure) {
-                    device.exposureMode = .continuousAutoExposure
-                } else if device.isExposureModeSupported(.autoExpose) {
+                // Use autoExpose for specific point exposure
+                if device.isExposureModeSupported(.autoExpose) {
                     device.exposureMode = .autoExpose
+                } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
                 }
+            }
+            
+            // Ensure full focus range is available for close objects
+            if device.isAutoFocusRangeRestrictionSupported {
+                device.autoFocusRangeRestriction = .none
             }
             
             device.isSubjectAreaChangeMonitoringEnabled = true
             
             device.unlockForConfiguration()
+            
+            // Switch back to continuous focus after a delay to maintain automatic focus
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.returnToContinuousFocus()
+            }
             
             focusCompletionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
                 DispatchQueue.main.async {
@@ -778,6 +912,29 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         
         NotificationCenter.default.removeObserver(self, name: .AVCaptureDeviceSubjectAreaDidChange, object: notification.object)
     }
+    
+    private func returnToContinuousFocus() {
+        let device = self.videoInput.device
+        do {
+            try device.lockForConfiguration()
+            
+            // Return to continuous auto focus for automatic operation
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            
+            // Return to continuous auto exposure
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            
+            device.unlockForConfiguration()
+        } catch {
+            print("Could not return to continuous focus: \(error)")
+        }
+    }
+    
+
     
     private func hideFocusIndicatorWithCompletion() {
         guard let focusView = self.focusView else { return }
@@ -846,6 +1003,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             }
         }
     }
+    
+
+    
+
     
     @objc func isOpen(_ call: CAPPluginCall) {
         var ret = PluginCallResultData()
