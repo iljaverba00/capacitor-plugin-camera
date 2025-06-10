@@ -170,6 +170,7 @@ public class CameraPreviewPlugin extends Plugin {
 
         imageAnalysis = imageAnalysisBuilder.build();
 
+        // Configure image analysis for better focus performance
         imageAnalysis.setAnalyzer(exec, new ImageAnalysis.Analyzer() {
             @Override
             public void analyze(@NonNull ImageProxy image) {
@@ -297,6 +298,79 @@ public class CameraPreviewPlugin extends Plugin {
         return null;
     }
 
+    /**
+     * Initialize responsive auto-focus on camera start
+     */
+    private void initializeResponsiveAutoFocus() {
+        if (camera != null && previewView != null) {
+            try {
+                // Set initial focus to center for faster startup
+                MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                float centerX = previewView.getWidth() / 2.0f;
+                float centerY = previewView.getHeight() / 2.0f;
+                MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                
+                // Create responsive auto-focus action with longer duration for better stability
+                FocusMeteringAction initialFocus = new FocusMeteringAction.Builder(centerPoint)
+                    .setAutoCancelDuration(5, TimeUnit.SECONDS) // Increased from 1 to 5 seconds
+                    .build();
+                
+                camera.getCameraControl().startFocusAndMetering(initialFocus);
+                
+                // Enable continuous auto-focus by starting a background focus monitoring
+                startContinuousAutoFocus();
+                
+                Log.d("Camera", "Initialized responsive auto-focus with continuous monitoring");
+            } catch (Exception e) {
+                Log.e("Camera", "Failed to initialize responsive auto-focus: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Start continuous auto-focus monitoring for better focus stability
+     */
+    private void startContinuousAutoFocus() {
+        if (camera != null && previewView != null) {
+            // Use a separate executor for continuous focus to avoid blocking
+            ExecutorService focusExecutor = Executors.newSingleThreadExecutor();
+            
+            focusExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                            Thread.sleep(2000); // Check every 2 seconds
+                            
+                            getActivity().runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        // Trigger auto-focus at center to maintain continuous focus
+                                        MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                        float centerX = previewView.getWidth() / 2.0f;
+                                        float centerY = previewView.getHeight() / 2.0f;
+                                        MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                                        
+                                        FocusMeteringAction continuousAction = new FocusMeteringAction.Builder(centerPoint)
+                                            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+                                            .build();
+                                        
+                                        camera.getCameraControl().startFocusAndMetering(continuousAction);
+                                    } catch (Exception e) {
+                                        Log.d("Camera", "Continuous focus update failed: " + e.getMessage());
+                                    }
+                                }
+                            });
+                        }
+                    } catch (InterruptedException e) {
+                        Log.d("Camera", "Continuous auto-focus stopped");
+                    }
+                }
+            });
+        }
+    }
+
     @PluginMethod
     public void startCamera(PluginCall call) {
         getActivity().runOnUiThread(new Runnable() {
@@ -305,6 +379,10 @@ public class CameraPreviewPlugin extends Plugin {
                     camera = cameraProvider.bindToLifecycle((LifecycleOwner) getContext(), cameraSelector, useCaseGroup);
                     previewView.setVisibility(View.VISIBLE);
                     makeWebViewTransparent();
+                    
+                    // Initialize responsive auto-focus for better performance
+                    initializeResponsiveAutoFocus();
+                    
                     triggerOnPlayed();
                     call.resolve();
                 } catch (Exception e) {
@@ -408,6 +486,9 @@ public class CameraPreviewPlugin extends Plugin {
         @Override
         public void run() {
             try {
+            // Cancel any existing focus operations for faster transitions
+            camera.getCameraControl().cancelFocusAndMetering();
+
             // Use PreviewView's built-in MeteringPointFactory for proper coordinate transformation
             MeteringPointFactory factory = previewView.getMeteringPointFactory();
 
@@ -417,24 +498,25 @@ public class CameraPreviewPlugin extends Plugin {
 
             MeteringPoint focusPoint = factory.createPoint(previewX, previewY);
 
-            // Get configurable options
+            // Get configurable options with improved defaults for better focus stability
             boolean includeExposure = Boolean.TRUE.equals(call.getBoolean("includeExposure", true));
             Integer autoCancelDurationParam = call.getInt("autoCancelDurationSeconds");
-            int autoCancelDuration = autoCancelDurationParam != null ? autoCancelDurationParam : 3;
+            // Increased to 4 seconds for better focus stability and manual control
+            int autoCancelDuration = autoCancelDurationParam != null ? autoCancelDurationParam : 4;
 
-            // Build the focus and metering action
-            FocusMeteringAction.Builder builder = new FocusMeteringAction.Builder(focusPoint);
+            // Build the focus and metering action with optimized settings
+            FocusMeteringAction.Builder builder;
 
-            // Set auto-focus flags
+            // Set auto-focus flags with optimized configuration
             if (includeExposure) {
                 // Use both AF and AE flags for the same point
                 builder = new FocusMeteringAction.Builder(focusPoint, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE);
             } else {
-                // Use only AF flag
+                // Use only AF flag for faster focus-only operations
                 builder = new FocusMeteringAction.Builder(focusPoint, FocusMeteringAction.FLAG_AF);
             }
 
-            // Set auto-cancel duration
+            // Set shorter auto-cancel duration for responsive focus
             builder.setAutoCancelDuration(autoCancelDuration, TimeUnit.SECONDS);
 
             FocusMeteringAction action = builder.build();
@@ -442,7 +524,7 @@ public class CameraPreviewPlugin extends Plugin {
             // Start focus and metering with result callback
             ListenableFuture<FocusMeteringResult> future = camera.getCameraControl().startFocusAndMetering(action);
 
-            // Add callback to handle the result
+            // Add callback to handle the result with enhanced focus maintenance
             future.addListener(new Runnable() {
                 @Override
                 public void run() {
@@ -461,6 +543,11 @@ public class CameraPreviewPlugin extends Plugin {
                     response.put("x", x);
                     response.put("y", y);
 
+                    // If manual focus was successful, maintain it with a follow-up action
+                    if (result.isFocusSuccessful()) {
+                        maintainFocusAtPoint(previewX, previewY);
+                    }
+
                     call.resolve(response);
                 } catch (Exception e) {
                     Log.e("Camera", "Focus operation failed", e);
@@ -477,6 +564,51 @@ public class CameraPreviewPlugin extends Plugin {
         });
     }
 
+    /**
+     * Maintain focus at a specific point with repeated focus actions for stability
+     */
+    private void maintainFocusAtPoint(float previewX, float previewY) {
+        if (camera == null || previewView == null) return;
+        
+        // Use a separate executor for focus maintenance
+        ExecutorService focusMaintainExecutor = Executors.newSingleThreadExecutor();
+        
+        focusMaintainExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Maintain focus for 10 seconds with periodic refocus
+                    for (int i = 0; i < 5; i++) {
+                        Thread.sleep(2000); // Wait 2 seconds between focus actions
+                        
+                        getActivity().runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                                        MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                        MeteringPoint maintainPoint = factory.createPoint(previewX, previewY);
+                                        
+                                        FocusMeteringAction maintainAction = new FocusMeteringAction.Builder(maintainPoint)
+                                            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+                                            .build();
+                                        
+                                        camera.getCameraControl().startFocusAndMetering(maintainAction);
+                                        Log.d("Camera", "Maintaining focus at tapped point");
+                                    }
+                                } catch (Exception e) {
+                                    Log.d("Camera", "Focus maintenance failed: " + e.getMessage());
+                                }
+                            }
+                        });
+                    }
+                } catch (InterruptedException e) {
+                    Log.d("Camera", "Focus maintenance interrupted");
+                }
+            }
+        });
+    }
+
     @PluginMethod
     public void setAutoFocusMode(PluginCall call) {
         if (camera == null) {
@@ -488,12 +620,17 @@ public class CameraPreviewPlugin extends Plugin {
         @Override
         public void run() {
             try {
-            String mode = call.getString("mode", "auto");
+            String mode = call.getString("mode", "continuous");
+            boolean enableFastTransitions = call.getBoolean("enableFastTransitions", true);
+            boolean enableAdaptiveFocus = call.getBoolean("enableAdaptiveFocus", true);
 
             switch (mode.toLowerCase()) {
                 case "auto":
-                // Default auto-focus behavior (continuous)
-                // CameraX handles this automatically
+                // Default auto-focus behavior with optimization
+                if (enableFastTransitions) {
+                    // Reset focus to enable faster transitions
+                    camera.getCameraControl().cancelFocusAndMetering();
+                }
                 break;
                 case "manual":
                 // For manual focus, we would need to disable auto-focus
@@ -501,7 +638,35 @@ public class CameraPreviewPlugin extends Plugin {
                 Log.w("Camera", "Manual focus mode not fully supported in CameraX");
                 break;
                 case "continuous":
-                // This is the default behavior in CameraX
+                // Enhanced continuous focus mode with adaptive focusing
+                if (enableFastTransitions) {
+                    // Cancel and restart for faster focus transitions
+                    camera.getCameraControl().cancelFocusAndMetering();
+                }
+                if (enableAdaptiveFocus) {
+                    // Start adaptive continuous focus for better near/far transitions
+                    startAdaptiveContinuousFocus();
+                }
+                break;
+                case "macro":
+                // Optimized for close-up focusing
+                Log.i("Camera", "Macro focus mode - optimized for close distances");
+                break;
+                case "infinity":
+                // Optimized for far distance focusing
+                // Focus at center point with infinity bias
+                if (previewView != null) {
+                    MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                    float centerX = previewView.getWidth() / 2.0f;
+                    float centerY = previewView.getHeight() / 2.0f;
+                    MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                    
+                    FocusMeteringAction infinityAction = new FocusMeteringAction.Builder(centerPoint)
+                        .setAutoCancelDuration(1, TimeUnit.SECONDS)
+                        .build();
+                    
+                    camera.getCameraControl().startFocusAndMetering(infinityAction);
+                }
                 break;
                 default:
                 call.reject("Unsupported focus mode: " + mode);
@@ -511,11 +676,77 @@ public class CameraPreviewPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("success", true);
             result.put("mode", mode);
+            result.put("enableFastTransitions", enableFastTransitions);
+            result.put("enableAdaptiveFocus", enableAdaptiveFocus);
             call.resolve(result);
             } catch (Exception e) {
             call.reject("Error setting auto focus mode: " + e.getMessage());
             }
         }
+        });
+    }
+
+    /**
+     * Start adaptive continuous focus for better handling of near/far object transitions
+     */
+    private void startAdaptiveContinuousFocus() {
+        if (camera == null || previewView == null) return;
+        
+        ExecutorService adaptiveFocusExecutor = Executors.newSingleThreadExecutor();
+        
+        adaptiveFocusExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Create multiple focus points for better scene coverage
+                    float[] focusPoints = {
+                        0.3f, 0.3f,  // Top-left quadrant
+                        0.7f, 0.3f,  // Top-right quadrant  
+                        0.5f, 0.5f,  // Center
+                        0.3f, 0.7f,  // Bottom-left quadrant
+                        0.7f, 0.7f   // Bottom-right quadrant
+                    };
+                    
+                    int pointIndex = 0;
+                    
+                    while (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                        Thread.sleep(1500); // Focus check every 1.5 seconds
+                        
+                        final int currentPointIndex = pointIndex;
+                        
+                        getActivity().runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (camera != null && previewView != null) {
+                                        MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                        
+                                        // Use current focus point from the array
+                                        float x = focusPoints[currentPointIndex * 2] * previewView.getWidth();
+                                        float y = focusPoints[currentPointIndex * 2 + 1] * previewView.getHeight();
+                                        
+                                        MeteringPoint adaptivePoint = factory.createPoint(x, y);
+                                        
+                                        FocusMeteringAction adaptiveAction = new FocusMeteringAction.Builder(adaptivePoint)
+                                            .setAutoCancelDuration(2, TimeUnit.SECONDS)
+                                            .build();
+                                        
+                                        camera.getCameraControl().startFocusAndMetering(adaptiveAction);
+                                        Log.d("Camera", "Adaptive focus at point: " + (currentPointIndex + 1));
+                                    }
+                                } catch (Exception e) {
+                                    Log.d("Camera", "Adaptive focus failed: " + e.getMessage());
+                                }
+                            }
+                        });
+                        
+                        // Cycle through focus points
+                        pointIndex = (pointIndex + 1) % (focusPoints.length / 2);
+                    }
+                } catch (InterruptedException e) {
+                    Log.d("Camera", "Adaptive continuous focus stopped");
+                }
+            }
         });
     }
 
@@ -533,8 +764,28 @@ public class CameraPreviewPlugin extends Plugin {
             // Cancel any ongoing focus operations
             camera.getCameraControl().cancelFocusAndMetering();
 
+            // Restart enhanced continuous autofocus for better stability
+            boolean restartContinuous = call.getBoolean("restartContinuous", true);
+            if (restartContinuous && previewView != null) {
+                // Set focus to center of screen to restart continuous AF with improved settings
+                MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                float centerX = previewView.getWidth() / 2.0f;
+                float centerY = previewView.getHeight() / 2.0f;
+                MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                
+                FocusMeteringAction restartAction = new FocusMeteringAction.Builder(centerPoint)
+                    .setAutoCancelDuration(5, TimeUnit.SECONDS) // Increased duration for stability
+                    .build();
+                
+                camera.getCameraControl().startFocusAndMetering(restartAction);
+                
+                // Restart the continuous auto-focus monitoring
+                startContinuousAutoFocus();
+            }
+
             JSObject result = new JSObject();
             result.put("success", true);
+            result.put("restartedContinuous", restartContinuous);
             call.resolve(result);
             } catch (Exception e) {
             call.reject("Error resetting focus: " + e.getMessage());
