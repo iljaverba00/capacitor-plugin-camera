@@ -449,7 +449,7 @@ public class CameraPreviewPlugin extends Plugin {
 
     @PluginMethod
     public void setZoom(PluginCall call) {
-        if (call.hasOption("factor")) {
+        if (call.hasOption("factor") && camera != null) {
             Float factor = call.getFloat("factor");
             try {
                 camera.getCameraControl().setZoomRatio(factor);
