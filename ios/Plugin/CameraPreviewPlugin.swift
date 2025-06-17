@@ -572,6 +572,15 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             
             facingBack = false
         }
+        
+        // Reset video connection orientations after camera switch to prevent rotation issues
+        if let connection = self.previewView.videoPreviewLayer.connection {
+            connection.videoOrientation = .portrait
+        }
+        if let videoConnection = self.videoOutput.connection(with: .video) {
+            videoConnection.videoOrientation = .portrait
+        }
+        
         if isRunning {
             self.captureSession.startRunning()
         }
