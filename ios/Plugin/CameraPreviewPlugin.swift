@@ -417,7 +417,9 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 normalized = croppedUIImage(image: normalized, scanRegion: self.scanRegion)
             }
             if takeSnapshotCall != nil {
-                let base64 = getBase64FromImage(image: normalized, quality: 100.0);
+                let qualityValue = takeSnapshotCall.getFloat("quality") ?? 100.0
+                let quality = CGFloat(qualityValue / 100.0) // Convert percentage to 0.0-1.0 range
+                let base64 = getBase64FromImage(image: normalized, quality: quality);
                 var ret = PluginCallResultData()
                 ret["base64"] = base64
                 takeSnapshotCall.resolve(ret)
