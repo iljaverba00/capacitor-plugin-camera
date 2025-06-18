@@ -42,20 +42,26 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         }
         
         // Initialize a camera view for previewing video.
-        DispatchQueue.main.sync {
-            self.previewView = PreviewView.init(frame: (bridge?.viewController?.view.bounds)!)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { 
+                call.reject("Camera instance deallocated")
+                return 
+            }
+            
+            self.previewView = PreviewView.init(frame: (self.bridge?.viewController?.view.bounds)!)
             self.webView!.superview!.insertSubview(self.previewView, belowSubview: self.webView!)
             
             // Only initialize capture session if permission is granted
             if authStatus == .authorized {
-                initializeCaptureSession(enableVideoRecording: false)
+                self.initializeCaptureSession(enableVideoRecording: false)
             }
             
             // Add tap gesture for focus
-            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleTapToFocus(_:)))
+            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(self.handleTapToFocus(_:)))
             self.previewView.addGestureRecognizer(tapGesture)
+            
+            call.resolve()
         }
-        call.resolve()
     }
     
     @objc func rotated() {
@@ -84,10 +90,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             captureSession.startRunning()
             DispatchQueue.main.async {
-                self.triggerOnPlayed()
+                self?.triggerOnPlayed()
             }
         }
 
@@ -295,7 +301,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         }
         
         // Enhanced focus before capture for better close-up performance
-        let device = self.videoInput.device
+        guard let videoInput = self.videoInput else {
+            self.photoOutput.capturePhoto(with: photoSettings, delegate: self)
+            return
+        }
+        let device = videoInput.device
         if device.isFocusModeSupported(.autoFocus) {
             do {
                 try device.lockForConfiguration()
@@ -811,21 +821,26 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     private func resetFocusIfStuck() {
-        // Remove any existing focus indicator
-        focusView?.removeFromSuperview()
-        focusCompletionTimer?.invalidate()
-        isFocusAnimating = false
-        
-        // Reset focus to continuous mode
-        let device = self.videoInput.device
-        do {
-            try device.lockForConfiguration()
-            if device.isFocusModeSupported(.continuousAutoFocus) {
-                device.focusMode = .continuousAutoFocus
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Remove any existing focus indicator
+            self.focusView?.removeFromSuperview()
+            self.focusCompletionTimer?.invalidate()
+            self.isFocusAnimating = false
+            
+            // Reset focus to continuous mode
+            guard let videoInput = self.videoInput else { return }
+            let device = videoInput.device
+            do {
+                try device.lockForConfiguration()
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                device.unlockForConfiguration()
+            } catch {
+                print("Could not reset focus: \(error)")
             }
-            device.unlockForConfiguration()
-        } catch {
-            print("Could not reset focus: \(error)")
         }
     }
     
@@ -848,7 +863,8 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     func focusWithPoint(point: CGPoint) {
-        let device = self.videoInput.device
+        guard let videoInput = self.videoInput else { return }
+        let device = videoInput.device
         
         let now = Date()
         if now.timeIntervalSince(lastFocusTime) < focusThrottleInterval {
@@ -925,7 +941,8 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     private func returnToContinuousFocus() {
-        let device = self.videoInput.device
+        guard let videoInput = self.videoInput else { return }
+        let device = videoInput.device
         do {
             try device.lockForConfiguration()
             
@@ -948,47 +965,53 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
 
     
     private func hideFocusIndicatorWithCompletion() {
-        guard let focusView = self.focusView else { return }
-        
-        UIView.animate(withDuration: 0.2, animations: {
-            focusView.alpha = 0.0
-            focusView.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
-        }) { _ in
-            focusView.removeFromSuperview()
-            focusView.transform = CGAffineTransform.identity
-            self.isFocusAnimating = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let focusView = self.focusView else { return }
+            
+            UIView.animate(withDuration: 0.2, animations: {
+                focusView.alpha = 0.0
+                focusView.transform = CGAffineTransform(scaleX: 0.8, y: 0.8)
+            }) { _ in
+                focusView.removeFromSuperview()
+                focusView.transform = CGAffineTransform.identity
+                self.isFocusAnimating = false
+            }
         }
     }
     
     func showFocusView(at point: CGPoint) {
-        if isFocusAnimating {
-            self.focusView?.removeFromSuperview()
-            focusCompletionTimer?.invalidate()
-        }
-        
-        // Create focus view if needed - but make it invisible
-        if self.focusView == nil {
-            self.focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
-            // Make the focus view completely transparent
-            self.focusView?.layer.borderColor = UIColor.clear.cgColor
-            self.focusView?.layer.borderWidth = 0.0
-            self.focusView?.layer.cornerRadius = 40
-            self.focusView?.backgroundColor = .clear
-            self.focusView?.alpha = 0.0
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             
-            // Remove the inner circle to make it completely invisible
-            // No inner circle added
+            if self.isFocusAnimating {
+                self.focusView?.removeFromSuperview()
+                self.focusCompletionTimer?.invalidate()
+            }
+            
+            // Create focus view if needed - but make it invisible
+            if self.focusView == nil {
+                self.focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
+                // Make the focus view completely transparent
+                self.focusView?.layer.borderColor = UIColor.clear.cgColor
+                self.focusView?.layer.borderWidth = 0.0
+                self.focusView?.layer.cornerRadius = 40
+                self.focusView?.backgroundColor = .clear
+                self.focusView?.alpha = 0.0
+                
+                // Remove the inner circle to make it completely invisible
+                // No inner circle added
+            }
+            
+            self.focusView?.center = point
+            self.focusView?.alpha = 0.0  // Keep invisible
+            self.focusView?.transform = CGAffineTransform.identity
+            self.previewView.addSubview(self.focusView!)
+            
+            self.isFocusAnimating = true
+            
+            // Skip the animation since the view is invisible
+            // Focus functionality still works, just no visual feedback
         }
-        
-        self.focusView?.center = point
-        self.focusView?.alpha = 0.0  // Keep invisible
-        self.focusView?.transform = CGAffineTransform.identity
-        self.previewView.addSubview(self.focusView!)
-        
-        self.isFocusAnimating = true
-        
-        // Skip the animation since the view is invisible
-        // Focus functionality still works, just no visual feedback
     }
     
     @objc func requestCameraPermission(_ call: CAPPluginCall) {
