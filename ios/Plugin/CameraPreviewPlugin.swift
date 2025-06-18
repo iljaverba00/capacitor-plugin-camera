@@ -813,7 +813,7 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             // Calculate the point in the preview layer's coordinate space
             let previewPoint = CGPoint(x: point.x * previewView.bounds.width,
                                      y: point.y * previewView.bounds.height)
-            showFocusView(at: previewPoint)
+            // showFocusView(at: previewPoint)
             call.resolve()
         } else {
             call.reject("Invalid coordinates. Provide normalized x,y values (0.0-1.0)")
@@ -859,7 +859,7 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         let convertedPoint = self.previewView.videoPreviewLayer.captureDevicePointConverted(fromLayerPoint: location)
         
         focusWithPoint(point: convertedPoint)
-        showFocusView(at: location)
+        // showFocusView(at: location)
     }
     
     func focusWithPoint(point: CGPoint) {
@@ -979,40 +979,40 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         }
     }
     
-    func showFocusView(at point: CGPoint) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+    // func showFocusView(at point: CGPoint) {
+    //     DispatchQueue.main.async { [weak self] in
+    //         guard let self = self else { return }
             
-            if self.isFocusAnimating {
-                self.focusView?.removeFromSuperview()
-                self.focusCompletionTimer?.invalidate()
-            }
+    //         if self.isFocusAnimating {
+    //             self.focusView?.removeFromSuperview()
+    //             self.focusCompletionTimer?.invalidate()
+    //         }
             
-            // Create focus view if needed - but make it invisible
-            if self.focusView == nil {
-                self.focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
-                // Make the focus view completely transparent
-                self.focusView?.layer.borderColor = UIColor.clear.cgColor
-                self.focusView?.layer.borderWidth = 0.0
-                self.focusView?.layer.cornerRadius = 40
-                self.focusView?.backgroundColor = .clear
-                self.focusView?.alpha = 0.0
+    //         // Create focus view if needed - but make it invisible
+    //         if self.focusView == nil {
+    //             self.focusView = UIView(frame: CGRect(x: 0, y: 0, width: 80, height: 80))
+    //             // Make the focus view completely transparent
+    //             self.focusView?.layer.borderColor = UIColor.clear.cgColor
+    //             self.focusView?.layer.borderWidth = 0.0
+    //             self.focusView?.layer.cornerRadius = 40
+    //             self.focusView?.backgroundColor = .clear
+    //             self.focusView?.alpha = 0.0
                 
-                // Remove the inner circle to make it completely invisible
-                // No inner circle added
-            }
+    //             // Remove the inner circle to make it completely invisible
+    //             // No inner circle added
+    //         }
             
-            self.focusView?.center = point
-            self.focusView?.alpha = 0.0  // Keep invisible
-            self.focusView?.transform = CGAffineTransform.identity
-            self.previewView.addSubview(self.focusView!)
+    //         self.focusView?.center = point
+    //         self.focusView?.alpha = 0.0  // Keep invisible
+    //         self.focusView?.transform = CGAffineTransform.identity
+    //         self.previewView.addSubview(self.focusView!)
             
-            self.isFocusAnimating = true
+    //         self.isFocusAnimating = true
             
-            // Skip the animation since the view is invisible
-            // Focus functionality still works, just no visual feedback
-        }
-    }
+    //         // Skip the animation since the view is invisible
+    //         // Focus functionality still works, just no visual feedback
+    //     }
+    // }
     
     @objc func requestCameraPermission(_ call: CAPPluginCall) {
         AVCaptureDevice.requestAccess(for: .video) { granted in
