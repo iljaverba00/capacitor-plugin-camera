@@ -310,9 +310,9 @@ public class CameraPreviewPlugin extends Plugin {
                 float centerY = previewView.getHeight() / 2.0f;
                 MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
                 
-                // Create responsive auto-focus action with longer duration for better stability
+                // Create responsive auto-focus action with fast duration for quick transitions
                 FocusMeteringAction initialFocus = new FocusMeteringAction.Builder(centerPoint)
-                    .setAutoCancelDuration(5, TimeUnit.SECONDS) // Increased from 1 to 5 seconds
+                    .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for responsive focus
                     .build();
                 
                 camera.getCameraControl().startFocusAndMetering(initialFocus);
@@ -340,7 +340,7 @@ public class CameraPreviewPlugin extends Plugin {
                 public void run() {
                     try {
                         while (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
-                            Thread.sleep(2000); // Check every 2 seconds
+                            Thread.sleep(800); // Check every 800ms for faster transitions
                             
                             getActivity().runOnUiThread(new Runnable() {
                                 @Override
@@ -353,7 +353,7 @@ public class CameraPreviewPlugin extends Plugin {
                                         MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
                                         
                                         FocusMeteringAction continuousAction = new FocusMeteringAction.Builder(centerPoint)
-                                            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+                                            .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for responsive transitions
                                             .build();
                                         
                                         camera.getCameraControl().startFocusAndMetering(continuousAction);
@@ -453,6 +453,63 @@ public class CameraPreviewPlugin extends Plugin {
             Float factor = call.getFloat("factor");
             try {
                 camera.getCameraControl().setZoomRatio(factor);
+                
+                // Automatically trigger focus after zoom change for better UX
+                ExecutorService zoomFocusExecutor = Executors.newSingleThreadExecutor();
+                zoomFocusExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            // Wait briefly for zoom to settle - faster for responsive focus
+                            Thread.sleep(150);
+                            
+                            getActivity().runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        // Trigger auto-focus at center after zoom change
+                                        if (previewView != null && camera != null) {
+                                            MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                            float centerX = previewView.getWidth() / 2.0f;
+                                            float centerY = previewView.getHeight() / 2.0f;
+                                            MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                                            
+                                            // Use fast focus settings for responsive zoom-triggered focus
+                                            FocusMeteringAction zoomFocusAction = new FocusMeteringAction.Builder(centerPoint,
+                                                FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
+                                                .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for zoom focus
+                                                .build();
+                                            
+                                            ListenableFuture<FocusMeteringResult> zoomFocusFuture = 
+                                                camera.getCameraControl().startFocusAndMetering(zoomFocusAction);
+                                            
+                                            zoomFocusFuture.addListener(new Runnable() {
+                                                @Override
+                                                public void run() {
+                                                    try {
+                                                        FocusMeteringResult result = zoomFocusFuture.get();
+                                                        if (result.isFocusSuccessful()) {
+                                                            Log.d("Camera", "Zoom-triggered focus successful for factor: " + factor);
+                                                        } else {
+                                                            Log.d("Camera", "Zoom-triggered focus failed, will rely on continuous AF");
+                                                        }
+                                                    } catch (Exception e) {
+                                                        Log.d("Camera", "Zoom focus result check failed: " + e.getMessage());
+                                                    }
+                                                }
+                                            }, ContextCompat.getMainExecutor(getContext()));
+                                        }
+                                    } catch (Exception e) {
+                                        Log.d("Camera", "Auto-focus after zoom failed: " + e.getMessage());
+                                    }
+                                }
+                            });
+                        } catch (InterruptedException e) {
+                            Log.d("Camera", "Zoom focus interrupted");
+                        }
+                    }
+                });
+                
             } catch (Exception e) {
                 e.printStackTrace();
                 call.reject(e.getMessage());
@@ -486,9 +543,9 @@ public class CameraPreviewPlugin extends Plugin {
         @Override
         public void run() {
             try {
-            // Cancel any existing focus operations for faster transitions
-            camera.getCameraControl().cancelFocusAndMetering();
-
+            // Only cancel if focus has been stable for a while to reduce multiple tap issues
+            // This prevents interrupting legitimate focus operations
+            
             // Use PreviewView's built-in MeteringPointFactory for proper coordinate transformation
             MeteringPointFactory factory = previewView.getMeteringPointFactory();
 
@@ -498,11 +555,11 @@ public class CameraPreviewPlugin extends Plugin {
 
             MeteringPoint focusPoint = factory.createPoint(previewX, previewY);
 
-            // Get configurable options with improved defaults for better focus stability
+            // Get configurable options with fast defaults for responsive focus
             boolean includeExposure = Boolean.TRUE.equals(call.getBoolean("includeExposure", true));
             Integer autoCancelDurationParam = call.getInt("autoCancelDurationSeconds");
-            // Increased to 4 seconds for better focus stability and manual control
-            int autoCancelDuration = autoCancelDurationParam != null ? autoCancelDurationParam : 4;
+            // Reduced to 1 second for fast responsive focus during near/far transitions
+            int autoCancelDuration = autoCancelDurationParam != null ? autoCancelDurationParam : 1;
 
             // Build the focus and metering action with optimized settings
             FocusMeteringAction.Builder builder;
@@ -543,8 +600,12 @@ public class CameraPreviewPlugin extends Plugin {
                     response.put("x", x);
                     response.put("y", y);
 
-                    // If manual focus was successful, maintain it with a follow-up action
-                    if (result.isFocusSuccessful()) {
+                    // If focus failed, try a backup focus attempt to reduce need for multiple taps
+                    if (!result.isFocusSuccessful()) {
+                        Log.d("Camera", "Initial focus failed, attempting backup focus");
+                        performBackupFocus(previewX, previewY);
+                    } else {
+                        // If manual focus was successful, maintain it with a follow-up action
                         maintainFocusAtPoint(previewX, previewY);
                     }
 
@@ -565,6 +626,67 @@ public class CameraPreviewPlugin extends Plugin {
     }
 
     /**
+     * Perform backup focus attempt if initial focus fails
+     * This reduces the need for users to tap multiple times
+     */
+    private void performBackupFocus(float previewX, float previewY) {
+        if (camera == null || previewView == null) return;
+        
+        // Wait a moment for the camera to settle
+        ExecutorService backupFocusExecutor = Executors.newSingleThreadExecutor();
+        backupFocusExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                                    try {
+                        Thread.sleep(200); // Wait 200ms for faster backup focus
+                    
+                    getActivity().runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                if (camera != null && previewView != null) {
+                                    MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                    MeteringPoint backupPoint = factory.createPoint(previewX, previewY);
+                                    
+                                    // Try with fast duration for responsive backup focus
+                                    FocusMeteringAction backupAction = new FocusMeteringAction.Builder(backupPoint, 
+                                        FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
+                                        .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for backup
+                                        .build();
+                                    
+                                    ListenableFuture<FocusMeteringResult> backupFuture = 
+                                        camera.getCameraControl().startFocusAndMetering(backupAction);
+                                    
+                                    backupFuture.addListener(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            try {
+                                                FocusMeteringResult backupResult = backupFuture.get();
+                                                if (backupResult.isFocusSuccessful()) {
+                                                    Log.d("Camera", "Backup focus successful");
+                                                    maintainFocusAtPoint(previewX, previewY);
+                                                } else {
+                                                    Log.d("Camera", "Backup focus also failed");
+                                                }
+                                            } catch (Exception e) {
+                                                Log.d("Camera", "Backup focus exception: " + e.getMessage());
+                                            }
+                                        }
+                                    }, ContextCompat.getMainExecutor(getContext()));
+                                }
+                            } catch (Exception e) {
+                                Log.d("Camera", "Backup focus setup failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                } catch (InterruptedException e) {
+                    Log.d("Camera", "Backup focus interrupted");
+                }
+            }
+        });
+    }
+
+    /**
      * Maintain focus at a specific point with repeated focus actions for stability
      */
     private void maintainFocusAtPoint(float previewX, float previewY) {
@@ -577,9 +699,9 @@ public class CameraPreviewPlugin extends Plugin {
             @Override
             public void run() {
                 try {
-                    // Maintain focus for 10 seconds with periodic refocus
-                    for (int i = 0; i < 5; i++) {
-                        Thread.sleep(2000); // Wait 2 seconds between focus actions
+                    // Maintain focus for 2 seconds with quick refocus for responsive transitions
+                    for (int i = 0; i < 2; i++) {
+                        Thread.sleep(1000); // Wait 1 second between focus actions
                         
                         getActivity().runOnUiThread(new Runnable() {
                             @Override
@@ -590,7 +712,7 @@ public class CameraPreviewPlugin extends Plugin {
                                         MeteringPoint maintainPoint = factory.createPoint(previewX, previewY);
                                         
                                         FocusMeteringAction maintainAction = new FocusMeteringAction.Builder(maintainPoint)
-                                            .setAutoCancelDuration(3, TimeUnit.SECONDS)
+                                            .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second maintenance
                                             .build();
                                         
                                         camera.getCameraControl().startFocusAndMetering(maintainAction);
@@ -710,7 +832,7 @@ public class CameraPreviewPlugin extends Plugin {
                     int pointIndex = 0;
                     
                     while (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
-                        Thread.sleep(1500); // Focus check every 1.5 seconds
+                        Thread.sleep(600); // Focus check every 600ms for faster near/far transitions
                         
                         final int currentPointIndex = pointIndex;
                         
@@ -728,7 +850,7 @@ public class CameraPreviewPlugin extends Plugin {
                                         MeteringPoint adaptivePoint = factory.createPoint(x, y);
                                         
                                         FocusMeteringAction adaptiveAction = new FocusMeteringAction.Builder(adaptivePoint)
-                                            .setAutoCancelDuration(2, TimeUnit.SECONDS)
+                                            .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for adaptive focus
                                             .build();
                                         
                                         camera.getCameraControl().startFocusAndMetering(adaptiveAction);
@@ -774,7 +896,7 @@ public class CameraPreviewPlugin extends Plugin {
                 MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
                 
                 FocusMeteringAction restartAction = new FocusMeteringAction.Builder(centerPoint)
-                    .setAutoCancelDuration(5, TimeUnit.SECONDS) // Increased duration for stability
+                    .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for responsive restart
                     .build();
                 
                 camera.getCameraControl().startFocusAndMetering(restartAction);
