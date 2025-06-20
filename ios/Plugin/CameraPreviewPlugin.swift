@@ -48,8 +48,22 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 return 
             }
             
-            self.previewView = PreviewView.init(frame: (self.bridge?.viewController?.view.bounds)!)
-            self.webView!.superview!.insertSubview(self.previewView, belowSubview: self.webView!)
+            // Safely get the view bounds
+            guard let viewController = self.bridge?.viewController,
+                  let viewBounds = viewController.view?.bounds else {
+                call.reject("Unable to access view controller or view bounds")
+                return
+            }
+            
+            // Safely get the webView and its superview
+            guard let webView = self.webView,
+                  let webViewSuperview = webView.superview else {
+                call.reject("Unable to access webView or its superview")
+                return
+            }
+            
+            self.previewView = PreviewView.init(frame: viewBounds)
+            webViewSuperview.insertSubview(self.previewView, belowSubview: webView)
             
             // Only initialize capture session if permission is granted
             if authStatus == .authorized {
@@ -65,20 +79,23 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     }
     
     @objc func rotated() {
-        let bounds = self.webView?.bounds
-        if bounds != nil {
-            self.previewView.frame = bounds!
-            if UIDevice.current.orientation == UIDeviceOrientation.portrait {
-                self.previewView.videoPreviewLayer.connection?.videoOrientation = .portrait
-                lastValidOrientation = "portrait"
-            }else if UIDevice.current.orientation == UIDeviceOrientation.landscapeLeft {
-                self.previewView.videoPreviewLayer.connection?.videoOrientation = .landscapeRight
-                lastValidOrientation = "landscapeRight"
-            }else if UIDevice.current.orientation == UIDeviceOrientation.landscapeRight {
-                self.previewView.videoPreviewLayer.connection?.videoOrientation = .landscapeLeft
-                lastValidOrientation = "landscapeLeft"
-            }
+        guard let bounds = self.webView?.bounds else {
+            notifyListeners("onOrientationChanged",data: nil)
+            return
         }
+        
+        self.previewView.frame = bounds
+        if UIDevice.current.orientation == UIDeviceOrientation.portrait {
+            self.previewView.videoPreviewLayer.connection?.videoOrientation = .portrait
+            lastValidOrientation = "portrait"
+        }else if UIDevice.current.orientation == UIDeviceOrientation.landscapeLeft {
+            self.previewView.videoPreviewLayer.connection?.videoOrientation = .landscapeRight
+            lastValidOrientation = "landscapeRight"
+        }else if UIDevice.current.orientation == UIDeviceOrientation.landscapeRight {
+            self.previewView.videoPreviewLayer.connection?.videoOrientation = .landscapeLeft
+            lastValidOrientation = "landscapeLeft"
+        }
+        
         notifyListeners("onOrientationChanged",data: nil)
     }
     
@@ -160,11 +177,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         guard let videoDevice = getBestAvailableCameraDevice() else { return }
         if enableVideoRecording {
             let microphone = AVCaptureDevice.default(for: AVMediaType.audio)
-            if microphone != nil {
-                let micInput = try? AVCaptureDeviceInput(device: microphone!)
-                if captureSession.canAddInput(micInput!) {
-                    captureSession.addInput(micInput!)
-                }
+            if let microphone = microphone,
+               let micInput = try? AVCaptureDeviceInput(device: microphone),
+               captureSession.canAddInput(micInput) {
+                captureSession.addInput(micInput)
             }
         }
        
