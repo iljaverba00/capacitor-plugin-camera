@@ -91,7 +91,7 @@ document.documentElement.style.setProperty('--ion-background-color', 'transparen
 
 <docgen-index>
 
-* [`initialize()`](#initialize)
+* [`initialize(...)`](#initialize)
 * [`getResolution()`](#getresolution)
 * [`setResolution(...)`](#setresolution)
 * [`getAllCameras()`](#getallcameras)
@@ -127,11 +127,15 @@ document.documentElement.style.setProperty('--ion-background-color', 'transparen
 <docgen-api>
 <!--Update the source file JSDoc comments and rerun docgen to update the docs below-->
 
-### initialize()
+### initialize(...)
 
 ```typescript
-initialize() => Promise<void>
+initialize(options?: { quality?: number | undefined; } | undefined) => Promise<void>
 ```
+
+| Param         | Type                               |
+| ------------- | ---------------------------------- |
+| **`options`** | <code>{ quality?: number; }</code> |
 
 --------------------
 
