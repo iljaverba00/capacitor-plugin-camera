@@ -110,11 +110,22 @@ public class CameraPreviewPlugin extends Plugin {
 
     static public Bitmap frameTaken;
 
+    // Store the desired JPEG quality, set during initialization
+    private int desiredJpegQuality = 95; // Default to high quality
+
     @PluginMethod
     public void initialize(PluginCall call) {
         getActivity().runOnUiThread(new Runnable() {
         @RequiresApi(api = Build.VERSION_CODES.P)
         public void run() {
+            // Get quality parameter from initialization, default to 95 if not specified
+            if (call.hasOption("quality")) {
+                desiredJpegQuality = call.getInt("quality");
+                // Ensure quality is within valid range
+                desiredJpegQuality = Math.max(1, Math.min(100, desiredJpegQuality));
+                Log.d("Camera", "Initialized with JPEG quality: " + desiredJpegQuality);
+            }
+
             previewView = new PreviewView(getContext());
             previewView.setScaleType(PreviewView.ScaleType.FIT_CENTER);
             FrameLayout.LayoutParams cameraPreviewParams = new FrameLayout.LayoutParams(
@@ -131,9 +142,9 @@ public class CameraPreviewPlugin extends Plugin {
                 cameraProvider = cameraProviderFuture.get();
                 cameraSelector = new CameraSelector.Builder()
                 .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
-                // Auto-optimize for photo capture on initialization
+                // Auto-optimize for photo capture on initialization with specified quality
                 setupUseCases(false); // Always use photo-optimized mode
-                Log.d("Camera", "Initialized with photo capture optimization");
+                Log.d("Camera", "Initialized with photo capture optimization and quality: " + desiredJpegQuality);
                 call.resolve();
             } catch (ExecutionException | InterruptedException e) {
                 e.printStackTrace();
@@ -221,7 +232,7 @@ public class CameraPreviewPlugin extends Plugin {
         imageCaptureBuilder.setTargetResolution(resolution);
         }
         imageCaptureBuilder.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY) // Prioritize quality over speed
-        .setJpegQuality(95); // High JPEG quality (0-100, default is around 85)
+        .setJpegQuality(desiredJpegQuality); // Use quality set during initialization
 
         // Add image stabilization if available (API 28+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -378,6 +389,7 @@ public class CameraPreviewPlugin extends Plugin {
                 try {
                     camera = cameraProvider.bindToLifecycle((LifecycleOwner) getContext(), cameraSelector, useCaseGroup);
                     previewView.setVisibility(View.VISIBLE);
+                    previewView.setBackgroundColor(Color.BLACK);
                     makeWebViewTransparent();
                     
                     // Initialize responsive auto-focus for better performance
@@ -400,6 +412,7 @@ public class CameraPreviewPlugin extends Plugin {
                 try {
                     restoreWebViewBackground();
                     previewView.setVisibility(View.INVISIBLE);
+                    previewView.setBackgroundColor(Color.BLACK);
                     cameraProvider.unbindAll();
                     call.resolve();
                 } catch (Exception e) {
@@ -421,11 +434,26 @@ public class CameraPreviewPlugin extends Plugin {
     @PluginMethod
     public void toggleTorch(PluginCall call) {
         try {
-            if (call.getBoolean("on", true)) {
+            boolean torchOn = call.getBoolean("on", true);
+            
+            if (torchOn) {
                 camera.getCameraControl().enableTorch(true);
             } else {
                 camera.getCameraControl().enableTorch(false);
             }
+            
+            // Check if it's front camera and adjust background accordingly
+            if (cameraSelector != null && cameraSelector.getLensFacing() == CameraSelector.LENS_FACING_FRONT) {
+                if (torchOn) {
+                    previewView.setBackgroundColor(Color.WHITE);
+                } else {
+                    previewView.setBackgroundColor(Color.BLACK);
+                }
+            } else {
+                // For back camera, ensure everything is back to normal
+                previewView.setBackgroundColor(Color.BLACK);
+            }
+
             call.resolve();
         } catch (Exception e) {
             call.reject(e.getMessage());

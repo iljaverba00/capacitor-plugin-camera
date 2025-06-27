@@ -1,7 +1,7 @@
 import { PluginListenerHandle } from "@capacitor/core";
 
 export interface CameraPreviewPlugin {
-  initialize(): Promise<void>;
+  initialize(options?: { quality?: number }): Promise<void>;
   getResolution(): Promise<{resolution: string}>;
   setResolution(options: {resolution: number}): Promise<void>;
   getAllCameras(): Promise<{cameras: string[]}>;

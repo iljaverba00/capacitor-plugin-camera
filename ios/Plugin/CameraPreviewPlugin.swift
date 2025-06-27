@@ -32,7 +32,17 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     var lastFocusTime: Date = Date()
     private let focusThrottleInterval: TimeInterval = 0.5
     var currentCameraDevice: AVCaptureDevice?
+    
+    // Store the desired JPEG quality, set during initialization
+    var desiredJpegQuality: Float = 0.95 // Default to high quality (0.0-1.0)
+    
     @objc func initialize(_ call: CAPPluginCall) {
+        // Get quality parameter from initialization, default to 95% if not specified
+        if let quality = call.getInt("quality") {
+            desiredJpegQuality = Float(max(1, min(100, quality))) / 100.0
+            print("Camera initialized with JPEG quality: \(desiredJpegQuality)")
+        }
+        
         // Check camera permission status first
         let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
         
@@ -111,6 +121,18 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             captureSession.startRunning()
             DispatchQueue.main.async {
                 self?.triggerOnPlayed()
+                var keyWindow: UIWindow? = nil
+                if #available(iOS 13.0, *) {
+                    keyWindow = UIApplication.shared.connectedScenes
+                                .compactMap { $0 as? UIWindowScene }
+                                .flatMap { $0.windows }
+                                .first { $0.isKeyWindow }
+                    } else {
+                        keyWindow = UIApplication.shared.keyWindow
+                    }
+                    if let window = keyWindow {
+                        window.backgroundColor = UIColor.black
+                    }
             }
         }
 
@@ -389,7 +411,7 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 }
                 if takePhotoCall.getBool("includeBase64", false) {
                     let image = UIImage(data: imageData)
-                    let base64 = getBase64FromImage(image: image!, quality: 100.0)
+                    let base64 = getBase64FromImage(image: image!, quality: desiredJpegQuality)
                     ret["base64"] = base64
                 }
                 do {
@@ -475,28 +497,52 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
            self.bridge?.webView!.scrollView.backgroundColor = UIColor.white
        }
     }
+
+    func getKeyWindow() -> UIWindow? {
+        if #available(iOS 13.0, *) {
+            return UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first { $0.isKeyWindow }
+        } else {
+            return UIApplication.shared.keyWindow
+        }
+    }
     
     @objc func toggleTorch(_ call: CAPPluginCall) {
         let device = videoInput.device
+        let torchOn = call.getBool("on", true) == true
         if device.hasTorch {
             do {
                 try device.lockForConfiguration()
-                if call.getBool("on", true) == true {
-                    device.torchMode = .on
-                } else {
-                    device.torchMode = .off
-                }
+                device.torchMode = torchOn ? .on : .off
                 device.unlockForConfiguration()
             } catch {
                 print("Torch could not be used")
             }
         }
+        DispatchQueue.main.async {
+            let isFrontTorch = !self.facingBack && torchOn
+            
+            if let window = self.getKeyWindow() {
+              window.backgroundColor = isFrontTorch ? UIColor.white : UIColor.black
+            }
+            // Make webview and scrollView transparent so window background is visible
+            self.bridge?.webView?.isOpaque = false
+            self.bridge?.webView?.backgroundColor = UIColor.clear
+            self.bridge?.webView?.scrollView.backgroundColor = UIColor.clear
+            
+        }
         call.resolve()
     }
+
     
     @objc func stopCamera(_ call: CAPPluginCall) {
         restoreWebViewBackground()
         DispatchQueue.main.sync {
+            if let window = self.getKeyWindow() {
+              window.backgroundColor = UIColor.black
+            }
             destroyCaptureSession()
         }
         call.resolve()

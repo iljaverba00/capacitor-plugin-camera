@@ -31,7 +31,15 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     }
   }
 
-  async initialize(): Promise<void> {
+  private desiredJpegQuality: number = 0.95; // Default to high quality (0.0-1.0)
+
+  async initialize(options?: { quality?: number }): Promise<void> {
+    // Get quality parameter from initialization, default to 95% if not specified
+    if (options?.quality !== undefined) {
+      this.desiredJpegQuality = Math.max(1, Math.min(100, options.quality)) / 100.0;
+      console.log(`Camera initialized with JPEG quality: ${this.desiredJpegQuality}`);
+    }
+    
     this.camera = await CameraEnhancer.createInstance();
     this.camera.on("played", (playCallBackInfo:PlayCallbackInfo) => {
       this.notifyListeners("onPlayed", {resolution:playCallBackInfo.width+"x"+playCallBackInfo.height});
@@ -234,11 +242,11 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
 
   async takeSnapshot(options:{quality?:number}): Promise<{ base64: string;}> {
     if (this.camera) {
-      let desiredQuality = 85;
-      if (options.quality) {
-        desiredQuality = options.quality;
+      let desiredQuality = this.desiredJpegQuality;
+      if (options?.quality !== undefined) {
+        desiredQuality = Math.max(1, Math.min(100, options.quality)) / 100.0;
       }
-      let dataURL = this.camera.getFrame().toCanvas().toDataURL('image/jpeg',desiredQuality);
+      let dataURL = this.camera.getFrame().toCanvas().toDataURL('image/jpeg', desiredQuality);
       let base64 = dataURL.replace("data:image/jpeg;base64,","");
       return {base64:base64};
     }else{
@@ -328,7 +336,7 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
           regionMeasuredByPercentage: 1
         }
       )
-      let base64 = this.removeDataURLHead(this.camera.getFrame().toCanvas().toDataURL("image/jpeg"));
+      let base64 = this.removeDataURLHead(this.camera.getFrame().toCanvas().toDataURL("image/jpeg", this.desiredJpegQuality));
       this.applyScanRegion();
       return {base64:base64};
     }else {
