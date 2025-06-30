@@ -1151,8 +1151,17 @@ public class CameraPreviewPlugin extends Plugin {
 
     @PluginMethod
     public void takeSnapshot(PluginCall call) {
-        call.setKeepAlive(true);
-        takeSnapshotCall = call;
+        if (camera == null) {
+            call.reject("Camera not initialized.");
+            return;
+        }
+        
+        try {
+            call.setKeepAlive(true);
+            takeSnapshotCall = call;
+        } catch (Exception e) {
+            call.reject("Failed to take snapshot: " + e.getMessage());
+        }
     }
 
     @PluginMethod

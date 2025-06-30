@@ -34,12 +34,12 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     var currentCameraDevice: AVCaptureDevice?
     
     // Store the desired JPEG quality, set during initialization
-    var desiredJpegQuality: Float = 0.95 // Default to high quality (0.0-1.0)
+    var desiredJpegQuality: CGFloat = 0.95 // Default to high quality (0.0-1.0)
     
     @objc func initialize(_ call: CAPPluginCall) {
         // Get quality parameter from initialization, default to 95% if not specified
         if let quality = call.getInt("quality") {
-            desiredJpegQuality = Float(max(1, min(100, quality))) / 100.0
+            desiredJpegQuality = CGFloat(max(1, min(100, quality))) / 100.0
             print("Camera initialized with JPEG quality: \(desiredJpegQuality)")
         }
         
@@ -242,6 +242,13 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                     self.photoOutput.maxPhotoQualityPrioritization = .quality
                 }
                 
+                // Enable content aware distortion correction if available
+                if #available(iOS 14.1, *) {
+                    if self.photoOutput.isContentAwareDistortionCorrectionSupported {
+                        self.photoOutput.isContentAwareDistortionCorrectionEnabled = true
+                    }
+                }
+                
                 if self.captureSession.canAddOutput(self.photoOutput) {
                     self.captureSession.addOutput(photoOutput)
                 }
@@ -335,7 +342,9 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         
         // Enable auto-focus and auto-exposure for optimal capture
         if #available(iOS 14.1, *) {
-            photoSettings.isAutoContentAwareDistortionCorrectionEnabled = true
+            if self.photoOutput.isContentAwareDistortionCorrectionEnabled {
+                photoSettings.isAutoContentAwareDistortionCorrectionEnabled = true
+            }
         }
         
         // Enhanced focus before capture for better close-up performance
