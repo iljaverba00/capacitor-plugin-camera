@@ -350,8 +350,12 @@ public class CameraPreviewPlugin extends Plugin {
                         return;
                     }
                     if (useCaseGroup == null) {
-                        call.reject("Camera use cases not initialized");
-                        return;
+                        // Re-initialize use cases if they were cleared
+                        setupUseCases(false);
+                        if (useCaseGroup == null) {
+                            call.reject("Camera use cases not initialized");
+                            return;
+                        }
                     }
                     if (previewView == null) {
                         call.reject("Preview view not initialized");
@@ -412,9 +416,22 @@ public class CameraPreviewPlugin extends Plugin {
             public void run() {
                 try {
                     restoreWebViewBackground();
-                    previewView.setVisibility(View.INVISIBLE);
-                    previewView.setBackgroundColor(Color.BLACK);
-                    cameraProvider.unbindAll();
+                    if (previewView != null) {
+                        previewView.setVisibility(View.INVISIBLE);
+                        previewView.setBackgroundColor(Color.BLACK);
+                    }
+                    if (cameraProvider != null) {
+                        cameraProvider.unbindAll();
+                    }
+                    // Null out references to help GC and ensure release
+                    camera = null;
+                    imageCapture = null;
+                    preview = null;
+                    imageAnalysis = null;
+                    useCaseGroup = null;
+                    recorder = null;
+                    currentRecording = null;
+                    Log.d("Camera", "Camera stopped and all references cleared.");
                     call.resolve();
                 } catch (Exception e) {
                     call.reject(e.getMessage());
@@ -1222,12 +1239,21 @@ public class CameraPreviewPlugin extends Plugin {
 
     @Override
     protected void handleOnPause() {
-        if (camera != null) {
+        if (camera != null && cameraProvider != null) {
             CameraState cameraStatus = camera.getCameraInfo().getCameraState().getValue();
             previousCameraStatus = cameraStatus;
             if (cameraStatus.getType() == CameraState.Type.OPEN) {
                 cameraProvider.unbindAll();
             }
+            // Null out references
+            camera = null;
+            imageCapture = null;
+            preview = null;
+            imageAnalysis = null;
+            useCaseGroup = null;
+            recorder = null;
+            currentRecording = null;
+            Log.d("Camera", "handleOnPause: Camera stopped and references cleared.");
         }
         super.handleOnPause();
     }
