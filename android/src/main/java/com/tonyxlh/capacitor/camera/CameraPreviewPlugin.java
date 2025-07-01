@@ -542,7 +542,7 @@ public class CameraPreviewPlugin extends Plugin {
                 
             } catch (Exception e) {
                 e.printStackTrace();
-                call.reject(e.getMessage());
+                call.resolve();
             }
         }
         call.resolve();
@@ -550,22 +550,34 @@ public class CameraPreviewPlugin extends Plugin {
 
     @PluginMethod
     public void setFocus(PluginCall call) {
+        
+        JSObject response = new JSObject();
         if (!call.hasOption("x") || !call.hasOption("y")) {
-        call.reject("Invalid focus coordinates - x and y are required");
+            response.put("success", false);
+            call.resolve(response);
         return;
         }
 
         Float x = call.getFloat("x");
         Float y = call.getFloat("y");
 
+        // Check for null values
+        if (x == null || y == null) {
+            response.put("success", false);
+            call.resolve(response);
+            return;
+        }
+
         // Validate coordinate ranges (should be 0-1 for normalized coordinates)
         if (x < 0.0f || x > 1.0f || y < 0.0f || y > 1.0f) {
-        call.reject("Focus coordinates must be normalized values between 0.0 and 1.0");
+        response.put("success", false);
+        call.resolve(response);
         return;
         }
 
         if (previewView == null || camera == null) {
-          call.reject("Camera preview is not initialized");
+          response.put("success", false);
+          call.resolve(response);
           return;
         }
 
@@ -634,7 +646,9 @@ public class CameraPreviewPlugin extends Plugin {
 
             } catch (Exception e) {
             Log.e("Camera", "Error setting focus", e);
-            call.reject("Error setting focus: " + e.getMessage());
+            response.put("success", false);
+            response.put("error", e.getMessage());
+            call.resolve(response);
             }
         }
         });
