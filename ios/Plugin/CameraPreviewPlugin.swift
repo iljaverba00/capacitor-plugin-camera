@@ -1235,74 +1235,80 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     private func calculateBlurScore(image: UIImage) -> Double {
         guard let cgImage = image.cgImage else { return 0.0 }
         
-        let context = CIContext()
-        let ciImage = CIImage(cgImage: cgImage)
+        let width = cgImage.width
+        let height = cgImage.height
         
-        // Convert to grayscale for better blur detection
-        let grayscaleFilter = CIFilter(name: "CIColorControls")!
-        grayscaleFilter.setValue(ciImage, forKey: kCIInputImageKey)
-        grayscaleFilter.setValue(0.0, forKey: kCIInputSaturationKey)
+        // Create bitmap context to access pixel data
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * width
+        let bitsPerComponent = 8
         
-        guard let grayscaleImage = grayscaleFilter.outputImage else { return 0.0 }
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: bitsPerComponent,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 0.0 }
         
-        // Apply Laplacian filter for edge detection
-        let laplacianKernel: [Float] = [
-            0, -1, 0,
-            -1, 4, -1,
-            0, -1, 0
-        ]
+        // Draw image into context
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
         
-        let convolutionFilter = CIFilter(name: "CIConvolution3X3")!
-        convolutionFilter.setValue(grayscaleImage, forKey: kCIInputImageKey)
-        convolutionFilter.setValue(CIVector(values: laplacianKernel, count: 9), forKey: "inputWeights")
+        guard let pixelData = context.data else { return 0.0 }
+        let data = pixelData.bindMemory(to: UInt8.self, capacity: width * height * bytesPerPixel)
         
-        guard let filteredImage = convolutionFilter.outputImage else { return 0.0 }
-        
-        // Calculate variance of the Laplacian
-        let extent = filteredImage.extent
-        let inputExtent = CIVector(x: extent.origin.x, y: extent.origin.y, z: extent.size.width, w: extent.size.height)
-        
-        let averageFilter = CIFilter(name: "CIAreaAverage")!
-        averageFilter.setValue(filteredImage, forKey: kCIInputImageKey)
-        averageFilter.setValue(inputExtent, forKey: kCIInputExtentKey)
-        
-        guard let averageImage = averageFilter.outputImage else { return 0.0 }
-        
-        var bitmap = [UInt8](repeating: 0, count: 4)
-        context.render(averageImage, toBitmap: &bitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
-        
-        let average = Double(bitmap[0]) / 255.0
-        
-        // Calculate variance by processing small samples of the image
-        let sampleSize = min(100, Int(extent.width), Int(extent.height))
-        let stepX = extent.width / Double(sampleSize)
-        let stepY = extent.height / Double(sampleSize)
-        
+        // Convert to grayscale and apply Laplacian kernel (same as Android/Web)
         var variance = 0.0
-        var sampleCount = 0
+        var count = 0
         
-        for i in 0..<sampleSize {
-            for j in 0..<sampleSize {
-                let x = extent.origin.x + Double(i) * stepX
-                let y = extent.origin.y + Double(j) * stepY
-                let sampleRect = CGRect(x: x, y: y, width: 1, height: 1)
+        // Sample every 4th pixel for performance (same as Android/Web)
+        let step = 4
+        for y in stride(from: step, to: height - step, by: step) {
+            for x in stride(from: step, to: width - step, by: step) {
+                let idx = (y * width + x) * bytesPerPixel
                 
-                let sampleFilter = CIFilter(name: "CIAreaAverage")!
-                sampleFilter.setValue(filteredImage, forKey: kCIInputImageKey)
-                sampleFilter.setValue(CIVector(cgRect: sampleRect), forKey: kCIInputExtentKey)
+                // Convert to grayscale using same formula as Android/Web
+                let r = Double(data[idx])
+                let g = Double(data[idx + 1]) 
+                let b = Double(data[idx + 2])
+                let gray = 0.299 * r + 0.587 * g + 0.114 * b
                 
-                if let sampleImage = sampleFilter.outputImage {
-                    var sampleBitmap = [UInt8](repeating: 0, count: 4)
-                    context.render(sampleImage, toBitmap: &sampleBitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
-                    
-                    let value = Double(sampleBitmap[0]) / 255.0
-                    variance += pow(value - average, 2)
-                    sampleCount += 1
-                }
+                // Calculate neighbors for 3x3 Laplacian kernel
+                let neighbors: [Double] = [
+                    // Top row
+                    getGrayscaleValue(data: data, x: x-1, y: y-1, width: width, bytesPerPixel: bytesPerPixel),
+                    getGrayscaleValue(data: data, x: x, y: y-1, width: width, bytesPerPixel: bytesPerPixel),
+                    getGrayscaleValue(data: data, x: x+1, y: y-1, width: width, bytesPerPixel: bytesPerPixel),
+                    // Middle row (left and right)
+                    getGrayscaleValue(data: data, x: x-1, y: y, width: width, bytesPerPixel: bytesPerPixel),
+                    getGrayscaleValue(data: data, x: x+1, y: y, width: width, bytesPerPixel: bytesPerPixel),
+                    // Bottom row
+                    getGrayscaleValue(data: data, x: x-1, y: y+1, width: width, bytesPerPixel: bytesPerPixel),
+                    getGrayscaleValue(data: data, x: x, y: y+1, width: width, bytesPerPixel: bytesPerPixel),
+                    getGrayscaleValue(data: data, x: x+1, y: y+1, width: width, bytesPerPixel: bytesPerPixel)
+                ]
+                
+                // Apply 3x3 Laplacian kernel (matches Android/Web implementation)
+                let laplacian = -neighbors[0] - neighbors[1] - neighbors[2] +
+                               -neighbors[3] + 8 * gray - neighbors[4] +
+                               -neighbors[5] - neighbors[6] - neighbors[7]
+                
+                variance += laplacian * laplacian
+                count += 1
             }
         }
         
-        return sampleCount > 0 ? variance / Double(sampleCount) : 0.0
+        return count > 0 ? variance / Double(count) : 0.0
+    }
+    
+    private func getGrayscaleValue(data: UnsafePointer<UInt8>, x: Int, y: Int, width: Int, bytesPerPixel: Int) -> Double {
+        let idx = (y * width + x) * bytesPerPixel
+        let r = Double(data[idx])
+        let g = Double(data[idx + 1])
+        let b = Double(data[idx + 2])
+        return 0.299 * r + 0.587 * g + 0.114 * b
     }
     
 }
