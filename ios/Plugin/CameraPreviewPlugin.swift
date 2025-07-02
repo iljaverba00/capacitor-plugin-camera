@@ -388,6 +388,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                                 device.focusMode = previousFocusMode
                                 device.exposureMode = previousExposureMode
                                 device.unlockForConfiguration()
+                                
+                                // Focus to center after settings restoration to ensure optimal focus state
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    self.focusToCenterSafely()
+                                }
                             } catch {
                                 print("Could not restore camera settings: \(error)")
                             }
@@ -427,6 +432,10 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                     let image = UIImage(data: imageData)
                     let base64 = getBase64FromImage(image: image!, quality: desiredJpegQuality)
                     ret["base64"] = base64
+                    
+                    // Detect blur if base64 is included
+                    let blurScore = calculateBlurScore(image: image!)
+                    ret["blurScore"] = blurScore
                 }
                 do {
                     
@@ -437,6 +446,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 }
                 takePhotoCall.resolve(ret)
                 takePhotoCall = nil
+                
+                // Focus to center after photo capture to ensure optimal focus state for next operation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.focusToCenterSafely()
+                }
             }
         }
     }
@@ -482,10 +496,24 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 let qualityValue = takeSnapshotCall.getFloat("quality") ?? 100.0
                 let quality = CGFloat(qualityValue / 100.0) // Convert percentage to 0.0-1.0 range
                 let base64 = getBase64FromImage(image: normalized, quality: quality);
+                
                 var ret = PluginCallResultData()
                 ret["base64"] = base64
+                
+                // Only detect blur if checkBlur option is true
+                let shouldCheckBlur = takeSnapshotCall.getBool("checkBlur", false)
+                if shouldCheckBlur {
+                    let blurScore = calculateBlurScore(image: normalized)
+                    ret["blurScore"] = blurScore
+                }
+                
                 takeSnapshotCall.resolve(ret)
                 takeSnapshotCall = nil
+                
+                // Focus to center after snapshot to ensure optimal focus state for next operation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.focusToCenterSafely()
+                }
             }
             if saveFrameCall != nil {
                 CameraPreviewPlugin.frameTaken = normalized
@@ -493,6 +521,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 ret["success"] = true
                 saveFrameCall.resolve(ret)
                 saveFrameCall = nil
+                
+                // Focus to center after frame save to ensure optimal focus state for next operation
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.focusToCenterSafely()
+                }
             }
         }
     }
@@ -868,6 +901,12 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             factor = min(factor, device.maxAvailableVideoZoomFactor)
             device.videoZoomFactor = factor
             device.unlockForConfiguration()
+            
+            // Trigger focus to center after zoom change
+            // if device.isFocusModeSupported(.autoFocus) {
+            //     let centerPoint = CGPoint(x: 0.5, y: 0.5)
+            //     focusWithPoint(point: centerPoint)
+            // }
         } catch {
             print("Zoom could not be used")
         }
@@ -959,14 +998,6 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 // Use autoFocus for more aggressive focusing on specific points
                 if device.isFocusModeSupported(.autoFocus) {
                     device.focusMode = .autoFocus
-                    
-                    // Set up observer for focus completion
-                    NotificationCenter.default.addObserver(
-                        self,
-                        selector: #selector(subjectAreaDidChange),
-                        name: .AVCaptureDeviceSubjectAreaDidChange,
-                        object: device
-                    )
                 } else if device.isFocusModeSupported(.continuousAutoFocus) {
                     device.focusMode = .continuousAutoFocus
                 }
@@ -996,12 +1027,7 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.returnToContinuousFocus()
             }
-            
-            // focusCompletionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
-            //     DispatchQueue.main.async {
-            //         self?.hideFocusIndicatorWithCompletion()
-            //     }
-            // }
+        
             
         } catch {
             print("Could not focus: \(error.localizedDescription)")
@@ -1015,6 +1041,23 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         
     //     NotificationCenter.default.removeObserver(self, name: .AVCaptureDeviceSubjectAreaDidChange, object: notification.object)
     // }
+    
+    private func focusToCenterSafely() {
+        // Check if enough time has passed since last focus operation to avoid conflicts
+        let now = Date()
+        if now.timeIntervalSince(lastFocusTime) < focusThrottleInterval {
+            return
+        }
+        
+        // Only focus if not currently adjusting focus to avoid interrupting ongoing operations
+        guard let videoInput = self.videoInput else { return }
+        let device = videoInput.device
+        
+        if !device.isAdjustingFocus {
+            let centerPoint = CGPoint(x: 0.5, y: 0.5)
+            focusWithPoint(point: centerPoint)
+        }
+    }
     
     private func returnToContinuousFocus() {
         guard let videoInput = self.videoInput else { return }
@@ -1099,6 +1142,15 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     
     @objc func takeSnapshot(_ call: CAPPluginCall) {
         call.keepAlive = true
+        
+        let device = videoInput.device
+        if device.isFocusModeSupported(.autoFocus) {
+            // Trigger focus to center before capturing
+            let centerPoint = CGPoint(x: 0.5, y: 0.5)
+            focusWithPoint(point: centerPoint)
+        }
+
+        // Set the call
         takeSnapshotCall = call
     }
     
@@ -1177,6 +1229,80 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     deinit {
         NotificationCenter.default.removeObserver(self)
         focusCompletionTimer?.invalidate()
+    }
+    
+    // MARK: - Blur Detection
+    private func calculateBlurScore(image: UIImage) -> Double {
+        guard let cgImage = image.cgImage else { return 0.0 }
+        
+        let context = CIContext()
+        let ciImage = CIImage(cgImage: cgImage)
+        
+        // Convert to grayscale for better blur detection
+        let grayscaleFilter = CIFilter(name: "CIColorControls")!
+        grayscaleFilter.setValue(ciImage, forKey: kCIInputImageKey)
+        grayscaleFilter.setValue(0.0, forKey: kCIInputSaturationKey)
+        
+        guard let grayscaleImage = grayscaleFilter.outputImage else { return 0.0 }
+        
+        // Apply Laplacian filter for edge detection
+        let laplacianKernel: [Float] = [
+            0, -1, 0,
+            -1, 4, -1,
+            0, -1, 0
+        ]
+        
+        let convolutionFilter = CIFilter(name: "CIConvolution3X3")!
+        convolutionFilter.setValue(grayscaleImage, forKey: kCIInputImageKey)
+        convolutionFilter.setValue(CIVector(values: laplacianKernel, count: 9), forKey: "inputWeights")
+        
+        guard let filteredImage = convolutionFilter.outputImage else { return 0.0 }
+        
+        // Calculate variance of the Laplacian
+        let extent = filteredImage.extent
+        let inputExtent = CIVector(x: extent.origin.x, y: extent.origin.y, z: extent.size.width, w: extent.size.height)
+        
+        let averageFilter = CIFilter(name: "CIAreaAverage")!
+        averageFilter.setValue(filteredImage, forKey: kCIInputImageKey)
+        averageFilter.setValue(inputExtent, forKey: kCIInputExtentKey)
+        
+        guard let averageImage = averageFilter.outputImage else { return 0.0 }
+        
+        var bitmap = [UInt8](repeating: 0, count: 4)
+        context.render(averageImage, toBitmap: &bitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+        
+        let average = Double(bitmap[0]) / 255.0
+        
+        // Calculate variance by processing small samples of the image
+        let sampleSize = min(100, Int(extent.width), Int(extent.height))
+        let stepX = extent.width / Double(sampleSize)
+        let stepY = extent.height / Double(sampleSize)
+        
+        var variance = 0.0
+        var sampleCount = 0
+        
+        for i in 0..<sampleSize {
+            for j in 0..<sampleSize {
+                let x = extent.origin.x + Double(i) * stepX
+                let y = extent.origin.y + Double(j) * stepY
+                let sampleRect = CGRect(x: x, y: y, width: 1, height: 1)
+                
+                let sampleFilter = CIFilter(name: "CIAreaAverage")!
+                sampleFilter.setValue(filteredImage, forKey: kCIInputImageKey)
+                sampleFilter.setValue(CIVector(cgRect: sampleRect), forKey: kCIInputExtentKey)
+                
+                if let sampleImage = sampleFilter.outputImage {
+                    var sampleBitmap = [UInt8](repeating: 0, count: 4)
+                    context.render(sampleImage, toBitmap: &sampleBitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+                    
+                    let value = Double(sampleBitmap[0]) / 255.0
+                    variance += pow(value - average, 2)
+                    sampleCount += 1
+                }
+            }
+        }
+        
+        return sampleCount > 0 ? variance / Double(sampleCount) : 0.0
     }
     
 }

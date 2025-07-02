@@ -240,15 +240,30 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     }
   }
 
-  async takeSnapshot(options:{quality?:number}): Promise<{ base64: string;}> {
+  async takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{ base64: string, blurScore?: number }> {
     if (this.camera) {
       let desiredQuality = this.desiredJpegQuality;
       if (options?.quality !== undefined) {
         desiredQuality = Math.max(1, Math.min(100, options.quality)) / 100.0;
       }
-      let dataURL = this.camera.getFrame().toCanvas().toDataURL('image/jpeg', desiredQuality);
+      let canvas = this.camera.getFrame().toCanvas();
+      let dataURL = canvas.toDataURL('image/jpeg', desiredQuality);
       let base64 = dataURL.replace("data:image/jpeg;base64,","");
-      return {base64:base64};
+      
+      // Only perform blur detection if checkBlur option is true
+      if (options?.checkBlur === true) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const blurResult = this.detectBlurWeb(imageData, canvas.width, canvas.height);
+          return {
+            base64: base64,
+            blurScore: blurResult.blurScore
+          };
+        }
+      }
+      
+      return {base64: base64};
     }else{
       throw new Error('Camera not initialized');
     }
@@ -306,7 +321,7 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     return canvas;
   }
 
-  async takePhoto(_options:{includeBase64?:boolean}): Promise<{ path?:string, base64?: string, blob?:Blob }> {
+  async takePhoto(_options:{includeBase64?:boolean}): Promise<{ path?:string, base64?: string, blob?:Blob, blurScore?: number }> {
     if (this.camera) {
       let video = this.camera.getUIElement().getElementsByTagName("video")[0];
       let localStream:MediaStream = video.srcObject as MediaStream;
@@ -336,8 +351,23 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
           regionMeasuredByPercentage: 1
         }
       )
-      let base64 = this.removeDataURLHead(this.camera.getFrame().toCanvas().toDataURL("image/jpeg", this.desiredJpegQuality));
+      let canvas = this.camera.getFrame().toCanvas();
+      let base64 = this.removeDataURLHead(canvas.toDataURL("image/jpeg", this.desiredJpegQuality));
       this.applyScanRegion();
+      
+      // Add blur detection if base64 is included
+      if (_options?.includeBase64) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const blurResult = this.detectBlurWeb(imageData, canvas.width, canvas.height);
+          return {
+            base64: base64,
+            blurScore: blurResult.blurScore
+          };
+        }
+      }
+      
       return {base64:base64};
     }else {
       throw new Error('Camera not initialized');
@@ -427,5 +457,50 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     }else{
       throw new Error("Camera not initialized");
     }
+  }
+
+  /**
+   * Detect blur using Laplacian variance algorithm (same as iOS/Android)
+   * Higher values indicate sharper images
+   */
+  private detectBlurWeb(imageData: ImageData, width: number, height: number): { blurScore: number } {
+    const data = imageData.data;
+    let variance = 0;
+    let count = 0;
+    
+    // Sample every 4th pixel for performance (similar to Android implementation)
+    const step = 4;
+    for (let y = step; y < height - step; y += step) {
+      for (let x = step; x < width - step; x += step) {
+        const idx = (y * width + x) * 4;
+        
+        // Convert to grayscale using same formula as Android
+        const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+        
+        // Calculate neighbors for 3x3 Laplacian kernel
+        const neighbors = [
+          0.299 * data[((y-1) * width + (x-1)) * 4] + 0.587 * data[((y-1) * width + (x-1)) * 4 + 1] + 0.114 * data[((y-1) * width + (x-1)) * 4 + 2],
+          0.299 * data[((y-1) * width + x) * 4] + 0.587 * data[((y-1) * width + x) * 4 + 1] + 0.114 * data[((y-1) * width + x) * 4 + 2],
+          0.299 * data[((y-1) * width + (x+1)) * 4] + 0.587 * data[((y-1) * width + (x+1)) * 4 + 1] + 0.114 * data[((y-1) * width + (x+1)) * 4 + 2],
+          0.299 * data[(y * width + (x-1)) * 4] + 0.587 * data[(y * width + (x-1)) * 4 + 1] + 0.114 * data[(y * width + (x-1)) * 4 + 2],
+          0.299 * data[(y * width + (x+1)) * 4] + 0.587 * data[(y * width + (x+1)) * 4 + 1] + 0.114 * data[(y * width + (x+1)) * 4 + 2],
+          0.299 * data[((y+1) * width + (x-1)) * 4] + 0.587 * data[((y+1) * width + (x-1)) * 4 + 1] + 0.114 * data[((y+1) * width + (x-1)) * 4 + 2],
+          0.299 * data[((y+1) * width + x) * 4] + 0.587 * data[((y+1) * width + x) * 4 + 1] + 0.114 * data[((y+1) * width + x) * 4 + 2],
+          0.299 * data[((y+1) * width + (x+1)) * 4] + 0.587 * data[((y+1) * width + (x+1)) * 4 + 1] + 0.114 * data[((y+1) * width + (x+1)) * 4 + 2]
+        ];
+        
+        // Apply 3x3 Laplacian kernel (matches Android implementation)
+        const laplacian = -neighbors[0] - neighbors[1] - neighbors[2] +
+                         -neighbors[3] + 8 * gray - neighbors[4] +
+                         -neighbors[5] - neighbors[6] - neighbors[7];
+        
+        variance += laplacian * laplacian;
+        count++;
+      }
+    }
+    
+    const blurScore = count > 0 ? variance / count : 0;
+    
+    return { blurScore };
   }
 }

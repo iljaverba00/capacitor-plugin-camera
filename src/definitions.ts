@@ -23,7 +23,7 @@ export interface CameraPreviewPlugin {
   /**
   * take a snapshot as base64.
   */
-  takeSnapshot(options:{quality?:number}): Promise<{base64:string}>;
+  takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{base64:string, blurScore?: number}>;
   /**
   * save a frame internally. Android and iOS only.
   */
@@ -32,7 +32,7 @@ export interface CameraPreviewPlugin {
   * take a snapshot on to a canvas. Web Only
   */
   takeSnapshot2(options:{canvas:HTMLCanvasElement,maxLength?:number}): Promise<{scaleRatio?:number}>;
-  takePhoto(options: {pathToSave?:string,includeBase64?: boolean}): Promise<{path?:string,base64?:string,blob?:Blob}>;
+  takePhoto(options: {pathToSave?:string,includeBase64?: boolean}): Promise<{path?:string,base64?:string,blob?:Blob, blurScore?: number}>;
   toggleTorch(options: {on: boolean}): Promise<void>;
   /**
   * get the orientation of the device.

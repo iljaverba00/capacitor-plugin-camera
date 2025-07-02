@@ -211,6 +211,17 @@ public class CameraPreviewPlugin extends Plugin {
                         String base64 = bitmap2Base64(bitmap, desiredQuality);
                         JSObject result = new JSObject();
                         result.put("base64", base64);
+                        
+                        // Only detect blur if checkBlur option is true
+                        boolean shouldCheckBlur = takeSnapshotCall.getBoolean("checkBlur", false);
+                        if (shouldCheckBlur) {
+                            double blurScore = calculateBlurScore(bitmap);
+                            result.put("blurScore", blurScore);
+                            Log.d("Camera", "Blur detection - Score: " + blurScore);
+                        } else {
+                            Log.d("Camera", "Blur detection disabled for performance");
+                        }
+                        
                         takeSnapshotCall.resolve(result);
                         takeSnapshotCall = null;
                     }
@@ -1344,6 +1355,53 @@ public class CameraPreviewPlugin extends Plugin {
             result.put("orientation","LANDSCAPE");
         }
         call.resolve(result);
+    }
+
+    /**
+     * Calculate blur score using Laplacian variance algorithm
+     * Higher values indicate sharper images
+     */
+    private double calculateBlurScore(Bitmap bitmap) {
+        if (bitmap == null) return 0.0;
+        
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        
+        // Convert to grayscale for better blur detection
+        int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+        
+        double[] grayscale = new double[width * height];
+        for (int i = 0; i < pixels.length; i++) {
+            int pixel = pixels[i];
+            int r = (pixel >> 16) & 0xFF;
+            int g = (pixel >> 8) & 0xFF;
+            int b = pixel & 0xFF;
+            grayscale[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+        }
+        
+        // Apply Laplacian kernel for edge detection
+        double variance = 0.0;
+        int count = 0;
+        
+        // Sample every 4th pixel for performance (similar to web implementation)
+        int step = 4;
+        for (int y = step; y < height - step; y += step) {
+            for (int x = step; x < width - step; x += step) {
+                int idx = y * width + x;
+                
+                // 3x3 Laplacian kernel
+                double laplacian = 
+                    -grayscale[idx - width - 1] - grayscale[idx - width] - grayscale[idx - width + 1] +
+                    -grayscale[idx - 1] + 8 * grayscale[idx] - grayscale[idx + 1] +
+                    -grayscale[idx + width - 1] - grayscale[idx + width] - grayscale[idx + width + 1];
+                
+                variance += laplacian * laplacian;
+                count++;
+            }
+        }
+        
+        return count > 0 ? variance / count : 0.0;
     }
 
 }
