@@ -15,12 +15,12 @@ end
 
 target 'Plugin' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS
-  pod 'TensorFlowLiteSwift', '~> 2.13.0'
+  # Use binary distribution of TensorFlow Lite to avoid cloning the entire repo
+  pod 'TensorFlowLiteSwift', '~> 2.13.0', :subspecs => ['Core'], :modular_headers => true
 end
 
 target 'PluginTests' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS
-  pod 'TensorFlowLiteSwift', '~> 2.13.0'
+  # Use binary distribution of TensorFlow Lite to avoid cloning the entire repo
+  pod 'TensorFlowLiteSwift', '~> 2.13.0', :subspecs => ['Core'], :modular_headers => true
 end
