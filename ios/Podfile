@@ -15,12 +15,12 @@ end
 
 target 'Plugin' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS - use module name as TensorFlowLite
-  pod 'TensorFlowLite', '2.13.0'
+  # TensorFlow Lite Swift
+  pod 'TensorFlowLiteSwift', '2.13.0', :modular_headers => true
 end
 
 target 'PluginTests' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS - use module name as TensorFlowLite
-  pod 'TensorFlowLite', '2.13.0'
+  # TensorFlow Lite Swift
+  pod 'TensorFlowLiteSwift', '2.13.0', :modular_headers => true
 end
