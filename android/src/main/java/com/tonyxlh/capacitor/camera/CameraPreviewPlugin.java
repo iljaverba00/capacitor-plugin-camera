@@ -339,6 +339,9 @@ public class CameraPreviewPlugin extends Plugin {
                 
                 camera.getCameraControl().startFocusAndMetering(initialFocus);
                 
+                // Enable continuous auto-focus by starting a background focus monitoring
+                startContinuousAutoFocus();
+                
                 Log.d("Camera", "Initialized responsive auto-focus with continuous monitoring");
             } catch (Exception e) {
                 Log.e("Camera", "Failed to initialize responsive auto-focus: " + e.getMessage());
@@ -645,6 +648,15 @@ public class CameraPreviewPlugin extends Plugin {
                         response.put("autoFocusSuccessful", result.isFocusSuccessful());
                         response.put("x", x);
                         response.put("y", y);
+
+                        // If focus failed, try a backup focus attempt to reduce need for multiple taps
+                        if (!result.isFocusSuccessful()) {
+                            Log.d("Camera", "Initial focus failed, attempting backup focus");
+                            performBackupFocus(previewX, previewY);
+                        } else {
+                            // If manual focus was successful, maintain it with a follow-up action
+                            maintainFocusAtPoint(previewX, previewY);
+                        }
                         
                         call.resolve(response);
                     } catch (Exception e) {
@@ -834,7 +846,9 @@ public class CameraPreviewPlugin extends Plugin {
                     .build();
                 
                 camera.getCameraControl().startFocusAndMetering(restartAction);
-
+                
+                // Restart the continuous auto-focus monitoring
+                startContinuousAutoFocus();
             }
 
             JSObject result = new JSObject();
@@ -1402,6 +1416,156 @@ public class CameraPreviewPlugin extends Plugin {
         }
         
         return count > 0 ? variance / count : 0.0;
+    }
+
+    /**
+     * Start continuous auto-focus monitoring for better focus stability
+     */
+    private void startContinuousAutoFocus() {
+        if (camera != null && previewView != null) {
+            // Use a separate executor for continuous focus to avoid blocking
+            ExecutorService focusExecutor = Executors.newSingleThreadExecutor();
+            
+            focusExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                            Thread.sleep(800); // Check every 800ms for faster transitions
+                            
+                            getActivity().runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        // Trigger auto-focus at center to maintain continuous focus
+                                        MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                        float centerX = previewView.getWidth() / 2.0f;
+                                        float centerY = previewView.getHeight() / 2.0f;
+                                        MeteringPoint centerPoint = factory.createPoint(centerX, centerY);
+                                        
+                                        FocusMeteringAction continuousAction = new FocusMeteringAction.Builder(centerPoint)
+                                            .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for responsive transitions
+                                            .build();
+                                        
+                                        camera.getCameraControl().startFocusAndMetering(continuousAction);
+                                    } catch (Exception e) {
+                                        Log.d("Camera", "Continuous focus update failed: " + e.getMessage());
+                                    }
+                                }
+                            });
+                        }
+                    } catch (InterruptedException e) {
+                        Log.d("Camera", "Continuous auto-focus stopped");
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Perform backup focus attempt if initial focus fails
+     * This reduces the need for users to tap multiple times
+     */
+    private void performBackupFocus(float previewX, float previewY) {
+        if (camera == null || previewView == null) return;
+        
+        // Wait a moment for the camera to settle
+        ExecutorService backupFocusExecutor = Executors.newSingleThreadExecutor();
+        backupFocusExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                                    try {
+                        Thread.sleep(200); // Wait 200ms for faster backup focus
+                    
+                    getActivity().runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                if (camera != null && previewView != null) {
+                                    MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                    MeteringPoint backupPoint = factory.createPoint(previewX, previewY);
+                                    
+                                    // Try with fast duration for responsive backup focus
+                                    FocusMeteringAction backupAction = new FocusMeteringAction.Builder(backupPoint, 
+                                        FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
+                                        .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second for backup
+                                        .build();
+                                    
+                                    ListenableFuture<FocusMeteringResult> backupFuture = 
+                                        camera.getCameraControl().startFocusAndMetering(backupAction);
+                                    
+                                    backupFuture.addListener(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            try {
+                                                FocusMeteringResult backupResult = backupFuture.get();
+                                                if (backupResult.isFocusSuccessful()) {
+                                                    Log.d("Camera", "Backup focus successful");
+                                                    maintainFocusAtPoint(previewX, previewY);
+                                                } else {
+                                                    Log.d("Camera", "Backup focus also failed");
+                                                }
+                                            } catch (Exception e) {
+                                                Log.d("Camera", "Backup focus exception: " + e.getMessage());
+                                            }
+                                        }
+                                    }, ContextCompat.getMainExecutor(getContext()));
+                                }
+                            } catch (Exception e) {
+                                Log.d("Camera", "Backup focus setup failed: " + e.getMessage());
+                            }
+                        }
+                    });
+                } catch (InterruptedException e) {
+                    Log.d("Camera", "Backup focus interrupted");
+                }
+            }
+        });
+    }
+
+    /**
+     * Maintain focus at a specific point with repeated focus actions for stability
+     */
+    private void maintainFocusAtPoint(float previewX, float previewY) {
+        if (camera == null || previewView == null) return;
+        
+        // Use a separate executor for focus maintenance
+        ExecutorService focusMaintainExecutor = Executors.newSingleThreadExecutor();
+        
+        focusMaintainExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Maintain focus for 2 seconds with quick refocus for responsive transitions
+                    for (int i = 0; i < 2; i++) {
+                        Thread.sleep(1000); // Wait 1 second between focus actions
+                        
+                        getActivity().runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (camera != null && camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                                        MeteringPointFactory factory = previewView.getMeteringPointFactory();
+                                        MeteringPoint maintainPoint = factory.createPoint(previewX, previewY);
+                                        
+                                        FocusMeteringAction maintainAction = new FocusMeteringAction.Builder(maintainPoint)
+                                            .setAutoCancelDuration(1, TimeUnit.SECONDS) // Fast 1 second maintenance
+                                            .build();
+                                        
+                                        camera.getCameraControl().startFocusAndMetering(maintainAction);
+                                        Log.d("Camera", "Maintaining focus at tapped point");
+                                    }
+                                } catch (Exception e) {
+                                    Log.d("Camera", "Focus maintenance failed: " + e.getMessage());
+                                }
+                            }
+                        });
+                    }
+                } catch (InterruptedException e) {
+                    Log.d("Camera", "Focus maintenance interrupted");
+                }
+            }
+        });
     }
 
 }
