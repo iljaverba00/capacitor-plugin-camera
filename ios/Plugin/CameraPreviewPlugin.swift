@@ -36,6 +36,9 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     // Store the desired JPEG quality, set during initialization
     var desiredJpegQuality: CGFloat = 0.95 // Default to high quality (0.0-1.0)
     
+    // TFLite blur detection helper
+    private var blurDetectionHelper: BlurDetectionHelper?
+    
     @objc func initialize(_ call: CAPPluginCall) {
         // Get quality parameter from initialization, default to 95% if not specified
         if let quality = call.getInt("quality") {
@@ -74,6 +77,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
             
             self.previewView = PreviewView.init(frame: viewBounds)
             webViewSuperview.insertSubview(self.previewView, belowSubview: webView)
+            
+            // Initialize TFLite blur detection helper
+            self.blurDetectionHelper = BlurDetectionHelper()
+            let tfliteInitialized = self.blurDetectionHelper?.initialize() ?? false
+            print("TFLite blur detection initialized: \(tfliteInitialized)")
             
             // Only initialize capture session if permission is granted
             if authStatus == .authorized {
@@ -434,8 +442,9 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                     ret["base64"] = base64
                     
                     // Detect blur if base64 is included
-                    let blurScore = calculateBlurScore(image: image!)
-                    ret["blurScore"] = blurScore
+                    let isBlur = calculateBlurResult(image: image!)
+                    ret["isBlur"] = isBlur
+                    print("Blur detection - Label: \(isBlur ? "blur" : "sharp")")
                 }
                 do {
                     
@@ -503,8 +512,11 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
                 // Only detect blur if checkBlur option is true
                 let shouldCheckBlur = takeSnapshotCall.getBool("checkBlur", false)
                 if shouldCheckBlur {
-                    let blurScore = calculateBlurScore(image: normalized)
-                    ret["blurScore"] = blurScore
+                    let isBlur = calculateBlurResult(image: normalized)
+                    ret["isBlur"] = isBlur
+                    print("Blur detection - Label: \(isBlur ? "blur" : "sharp")")
+                } else {
+                    print("Blur detection disabled for performance")
                 }
                 
                 takeSnapshotCall.resolve(ret)
@@ -1229,10 +1241,26 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
     deinit {
         NotificationCenter.default.removeObserver(self)
         focusCompletionTimer?.invalidate()
+        
+        // Clean up TFLite resources
+        blurDetectionHelper?.close()
+        blurDetectionHelper = nil
     }
     
     // MARK: - Blur Detection
-    private func calculateBlurScore(image: UIImage) -> Double {
+    private func calculateBlurResult(image: UIImage) -> Bool {
+        // Use TFLite model if available, otherwise fallback to Laplacian
+        if let helper = blurDetectionHelper, helper.getIsInitialized() {
+            return helper.isBlurry(image: image)
+        } else {
+            // Fallback to original Laplacian algorithm
+            let laplacianScore = calculateLaplacianBlurScore(image: image)
+            return laplacianScore < 50
+        }
+    }
+    
+    // Original Laplacian blur detection (fallback)
+    private func calculateLaplacianBlurScore(image: UIImage) -> Double {
         guard let cgImage = image.cgImage else { return 0.0 }
         
         let width = cgImage.width
