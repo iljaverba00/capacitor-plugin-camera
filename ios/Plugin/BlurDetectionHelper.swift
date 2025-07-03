@@ -1,6 +1,6 @@
 import Foundation
 import UIKit
-import TensorFlowLiteSwift
+import TensorFlowLite
 
 /**
  * TensorFlow Lite Blur Detection Helper for iOS

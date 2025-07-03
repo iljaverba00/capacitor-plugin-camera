@@ -15,12 +15,12 @@ end
 
 target 'Plugin' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS
-  pod 'TensorFlowLiteSwift', '~> 2.13.0'
+  # Add TensorFlow Lite for iOS - use module name as TensorFlowLite
+  pod 'TensorFlowLite', '2.13.0'
 end
 
 target 'PluginTests' do
   capacitor_pods
-  # Add TensorFlow Lite for iOS
-  pod 'TensorFlowLiteSwift', '~> 2.13.0'
+  # Add TensorFlow Lite for iOS - use module name as TensorFlowLite
+  pod 'TensorFlowLite', '2.13.0'
 end
