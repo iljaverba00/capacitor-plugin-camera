@@ -1,6 +1,6 @@
 import Foundation
 import UIKit
-import TensorFlowLite
+import TensorFlowLiteSwift
 
 /**
  * TensorFlow Lite Blur Detection Helper for iOS
@@ -39,8 +39,8 @@ class BlurDetectionHelper {
             // Try to use Metal (GPU) acceleration if available
             if #available(iOS 13.0, *) {
                 do {
-                    let delegate = MetalDelegate()
-                    options.delegates = [delegate]
+                    let delegate = try MetalDelegate()
+                    options.add(delegate)
                     print("\(Self.TAG): Using Metal GPU acceleration")
                 } catch {
                     print("\(Self.TAG): Metal delegate not available, using CPU: \(error)")
