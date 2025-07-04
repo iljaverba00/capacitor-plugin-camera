@@ -15,12 +15,12 @@ end
 
 target 'Plugin' do
   capacitor_pods
-  # TensorFlow Lite Swift
-  pod 'TensorFlowLiteSwift', '2.13.0', :modular_headers => true
+  # Use TensorFlowLiteSwift - official recommendation
+  pod 'TensorFlowLiteSwift'
 end
 
 target 'PluginTests' do
   capacitor_pods
-  # TensorFlow Lite Swift
-  pod 'TensorFlowLiteSwift', '2.13.0', :modular_headers => true
+  # Use TensorFlowLiteSwift - official recommendation
+  pod 'TensorFlowLiteSwift'
 end
