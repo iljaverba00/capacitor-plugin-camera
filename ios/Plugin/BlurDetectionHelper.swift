@@ -10,7 +10,10 @@ class BlurDetectionHelper {
     
     private static let TAG = "BlurDetectionHelper"
     private static let MODEL_FILENAME = "blur_detection_model.tflite"
-    private static let INPUT_SIZE = 224 // MobileNetV2 standard input size
+    private static let INPUT_WIDTH = 600 // Model's expected input width
+    private static let INPUT_HEIGHT = 600 // Model's expected input height
+    private static let BATCH_SIZE = 1 // Model expects a batch size of 1
+    private static let NUM_CHANNELS = 3 // RGB
     private static let NUM_CLASSES = 2 // blur, sharp
     
     private var interpreter: Interpreter?
@@ -26,8 +29,9 @@ class BlurDetectionHelper {
      */
     func initialize() -> Bool {
         do {
-            // Load model from bundle
-            guard let modelPath = Bundle.main.path(forResource: "blur_detection_model", ofType: "tflite") else {
+            // Load model from framework bundle
+            let frameworkBundle = Bundle(for: type(of: self))
+            guard let modelPath = frameworkBundle.path(forResource: "blur_detection_model", ofType: "tflite") else {
                 print("\(Self.TAG): Error - Model file not found in bundle")
                 return false
             }
@@ -36,17 +40,6 @@ class BlurDetectionHelper {
             var options = Interpreter.Options()
             options.threadCount = 4 // Use multiple threads for better performance
             
-            // Try to use Metal (GPU) acceleration if available
-//            if #available(iOS 13.0, *) {
-//                do {
-//                    let delegate = try MetalDelegate()
-//                    options.add(delegate)
-//                    print("\(Self.TAG): Using Metal GPU acceleration")
-//                } catch {
-//                    print("\(Self.TAG): Metal delegate not available, using CPU: \(error)")
-//                }
-//            }
-            
             // Create interpreter
             interpreter = try Interpreter(modelPath: modelPath, options: options)
             
@@ -54,7 +47,6 @@ class BlurDetectionHelper {
             try interpreter?.allocateTensors()
             
             isInitialized = true
-            print("\(Self.TAG): TFLite blur detection model initialized successfully")
             return true
             
         } catch {
@@ -71,15 +63,13 @@ class BlurDetectionHelper {
      */
     func detectBlur(image: UIImage) -> Double {
         guard isInitialized, let interpreter = interpreter else {
-            print("\(Self.TAG): TFLite model not initialized, falling back to Laplacian")
             let laplacianScore = calculateLaplacianBlurScore(image: image)
             let isBlur = laplacianScore < 150
-            print("\(Self.TAG): Laplacian Fallback - Score: \(String(format: "%.2f", laplacianScore)), Label: \(isBlur ? "blur" : "sharp")")
             return isBlur ? 1.0 : 0.0
         }
         
         do {
-            // Preprocess image for MobileNetV2
+            // Preprocess image for model input
             guard let inputData = preprocessImage(image) else {
                 print("\(Self.TAG): Error preprocessing image")
                 return calculateLaplacianBlurScore(image: image)
@@ -103,14 +93,9 @@ class BlurDetectionHelper {
             // probabilities[0] = blur probability, probabilities[1] = sharp probability
             let blurConfidence = probabilities.count > 0 ? Double(probabilities[0]) : 0.0
             let sharpConfidence = probabilities.count > 1 ? Double(probabilities[1]) : 0.0
-
-            // Laplacian algorithm
-            let laplacianScore = calculateLaplacianBlurScore(image: image)
             
             // Determine if image is blurry using TFLite confidence or Laplacian score < 50
-            let isBlur = (blurConfidence > sharpConfidence && blurConfidence > 0.99) || (laplacianScore < 50 && sharpConfidence < 0.1)
-            
-            print("\(Self.TAG): TFLite Blur Detection - Blur: \(String(format: "%.6f", blurConfidence)), Sharp: \(String(format: "%.6f", sharpConfidence)), Label: \(isBlur ? "blur" : "sharp")")
+            let isBlur = (blurConfidence > sharpConfidence && blurConfidence >= 0.99)
             
             // Return 1.0 for blur, 0.0 for sharp (to maintain double return type)
             return isBlur ? 1.0 : 0.0
@@ -120,7 +105,6 @@ class BlurDetectionHelper {
             // Fallback to Laplacian algorithm
             let laplacianScore = calculateLaplacianBlurScore(image: image)
             let isBlur = laplacianScore < 150
-            print("\(Self.TAG): Laplacian Fallback - Score: \(String(format: "%.2f", laplacianScore)), Label: \(isBlur ? "blur" : "sharp")")
             return isBlur ? 1.0 : 0.0
         }
     }
@@ -129,8 +113,8 @@ class BlurDetectionHelper {
      * Preprocess image for MobileNetV2 input (224x224 RGB, normalized)
      */
     private func preprocessImage(_ image: UIImage) -> Data? {
-        // Resize image to 224x224
-        guard let resizedImage = resizeImage(image, to: CGSize(width: Self.INPUT_SIZE, height: Self.INPUT_SIZE)) else {
+        // Resize image to model's expected dimensions
+        guard let resizedImage = resizeImage(image, to: CGSize(width: Self.INPUT_WIDTH, height: Self.INPUT_HEIGHT)) else {
             return nil
         }
         
@@ -159,18 +143,24 @@ class BlurDetectionHelper {
         
         // Convert to float array and normalize to [0, 1]
         var normalizedPixels = [Float32]()
-        normalizedPixels.reserveCapacity(width * height * 3) // RGB only
+        let totalPixels = Self.BATCH_SIZE * width * height * Self.NUM_CHANNELS
+        normalizedPixels.reserveCapacity(totalPixels)
         
-        for i in stride(from: 0, to: pixelData.count, by: 4) {
-            let r = Float32(pixelData[i]) / 255.0
-            let g = Float32(pixelData[i + 1]) / 255.0
-            let b = Float32(pixelData[i + 2]) / 255.0
-            normalizedPixels.append(r)
-            normalizedPixels.append(g)
-            normalizedPixels.append(b)
+        // Add batch dimension by repeating the image data BATCH_SIZE times
+        for _ in 0..<Self.BATCH_SIZE {
+            for i in stride(from: 0, to: pixelData.count, by: bytesPerPixel) {
+                let r = Float32(pixelData[i]) / 255.0
+                let g = Float32(pixelData[i + 1]) / 255.0
+                let b = Float32(pixelData[i + 2]) / 255.0
+                normalizedPixels.append(r)
+                normalizedPixels.append(g)
+                normalizedPixels.append(b)
+            }
         }
         
-        return Data(bytes: normalizedPixels, count: normalizedPixels.count * MemoryLayout<Float32>.size)
+        return normalizedPixels.withUnsafeBufferPointer { buffer in
+            return Data(buffer: buffer)
+        }
     }
     
     /**
