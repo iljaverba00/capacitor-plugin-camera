@@ -1,12 +1,4 @@
-require_relative '../node_modules/@capacitor/ios/scripts/pods_helpers'
-
 platform :ios, '14.0'
-use_frameworks!
-
-# workaround to avoid Xcode caching of Pods that requires
-# Product -> Clean Build Folder after new Cordova plugins installed
-# Requires CocoaPods 1.6 or newer
-install! 'cocoapods', :disable_input_output_paths => true
 
 def capacitor_pods
   pod 'Capacitor', :path => '../node_modules/@capacitor/ios'
@@ -15,12 +7,12 @@ end
 
 target 'Plugin' do
   capacitor_pods
-  # Use TensorFlowLiteSwift - official recommendation
+  use_frameworks!
   pod 'TensorFlowLiteSwift'
 end
 
 target 'PluginTests' do
   capacitor_pods
-  # Use TensorFlowLiteSwift - official recommendation
+  use_frameworks!
   pod 'TensorFlowLiteSwift'
 end
