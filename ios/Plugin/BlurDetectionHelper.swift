@@ -9,7 +9,6 @@ import TensorFlowLite
 class BlurDetectionHelper {
     
     private static let TAG = "BlurDetectionHelper"
-    private static let MODEL_FILENAME = "blur_detection_model.tflite"
     private static let INPUT_WIDTH = 600 // Model's expected input width
     private static let INPUT_HEIGHT = 600 // Model's expected input height
     private static let BATCH_SIZE = 1 // Model expects a batch size of 1
@@ -95,7 +94,9 @@ class BlurDetectionHelper {
             let sharpConfidence = probabilities.count > 1 ? Double(probabilities[1]) : 0.0
             
             // Determine if image is blurry using TFLite confidence or Laplacian score < 50
-            let isBlur = (blurConfidence > sharpConfidence && blurConfidence >= 0.99)
+            let isBlur = (blurConfidence >= 0.99 || sharpConfidence < 0.1)
+
+            print("\(Self.TAG): TFLite Blur Detection - Blur: \(String(format: "%.6f", blurConfidence)), Sharp: \(String(format: "%.6f", sharpConfidence)), Label: \(isBlur ? "blur" : "sharp")")
             
             // Return 1.0 for blur, 0.0 for sharp (to maintain double return type)
             return isBlur ? 1.0 : 0.0
