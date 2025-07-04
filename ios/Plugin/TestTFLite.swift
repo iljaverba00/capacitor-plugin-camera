@@ -2,7 +2,7 @@
 import Foundation
 
 // Try different import approaches
-import TensorFlowLite
+// import TensorFlowLite
 //import TensorFlowLiteSwift
 
 func testTFImports() {
