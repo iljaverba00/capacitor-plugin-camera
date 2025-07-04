@@ -67,9 +67,8 @@ public class BlurDetectionHelper {
             // Try to use GPU acceleration if available
             try {
                 options.setUseXNNPACK(true);
-                Log.d(TAG, "Using XNNPACK acceleration");
             } catch (Exception e) {
-                Log.w(TAG, "XNNPACK not available, using CPU");
+                // XNNPACK not available, using CPU
             }
             
             tflite = new Interpreter(tfliteModel, options);
@@ -82,12 +81,8 @@ public class BlurDetectionHelper {
                     tflite.getOutputTensor(0).dataType()
             );
             
-            // Log tensor information and update INPUT_SIZE based on model
+            // Update INPUT_SIZE based on actual model input shape
             int[] inputShape = tflite.getInputTensor(0).shape();
-            Log.d(TAG, "Input tensor shape: " + java.util.Arrays.toString(inputShape));
-            Log.d(TAG, "Input tensor type: " + tflite.getInputTensor(0).dataType());
-            Log.d(TAG, "Output tensor shape: " + java.util.Arrays.toString(tflite.getOutputTensor(0).shape()));
-            Log.d(TAG, "Output tensor type: " + tflite.getOutputTensor(0).dataType());
             
             // Update INPUT_SIZE based on actual model input shape
             // Expected format: [batch, height, width, channels] or [batch, channels, height, width]
@@ -95,29 +90,23 @@ public class BlurDetectionHelper {
                 // Assume format is [batch, height, width, channels]
                 int modelInputSize = inputShape[1]; // height dimension
                 if (modelInputSize != INPUT_SIZE) {
-                    Log.w(TAG, "Model expects input size " + modelInputSize + " but code was configured for " + INPUT_SIZE);
                     INPUT_SIZE = modelInputSize;
-                    Log.i(TAG, "Updated INPUT_SIZE to " + INPUT_SIZE + " to match model");
                     
                     // Recreate image processor with correct size
                     imageProcessor = new ImageProcessor.Builder()
                         .add(new ResizeWithCropOrPadOp(INPUT_SIZE, INPUT_SIZE))
                         .add(new ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
                         .build();
-                    Log.d(TAG, "Recreated ImageProcessor with INPUT_SIZE = " + INPUT_SIZE);
                 }
             }
             
             isInitialized = true;
-            Log.d(TAG, "TFLite blur detection model initialized successfully");
             return true;
             
         } catch (IOException e) {
-            Log.e(TAG, "Error loading TFLite model: " + e.getMessage());
             isInitialized = false;
             return false;
         } catch (Exception e) {
-            Log.e(TAG, "Error initializing TFLite model: " + e.getMessage());
             isInitialized = false;
             return false;
         }
@@ -142,27 +131,17 @@ public class BlurDetectionHelper {
             inputImageBuffer.load(processedBitmap);
             inputImageBuffer = imageProcessor.process(inputImageBuffer);
 
-            // Debug: Log buffer info
+            // Get tensor buffer
             ByteBuffer tensorBuffer = inputImageBuffer.getBuffer();
-            Log.d(TAG, "TensorImage buffer size: " + tensorBuffer.remaining() + " bytes");
-            Log.d(TAG, "TensorImage buffer capacity: " + tensorBuffer.capacity() + " bytes");
-            Log.d(TAG, "TensorImage data type: " + inputImageBuffer.getDataType());
-            Log.d(TAG, "Model input tensor type: " + tflite.getInputTensor(0).dataType());
-            Log.d(TAG, "Expected buffer size: " + (INPUT_SIZE * INPUT_SIZE * 3 * 4) + " bytes");
 
             // Check if we need normalization based on data types
             ByteBuffer inferenceBuffer;
             if (inputImageBuffer.getDataType() == DataType.UINT8 && tflite.getInputTensor(0).dataType() == DataType.FLOAT32) {
-                Log.d(TAG, "Converting UINT8 to FLOAT32 with normalization");
                 inferenceBuffer = normalizeImageBuffer(tensorBuffer);
-                Log.d(TAG, "Normalized buffer size: " + inferenceBuffer.remaining() + " bytes");
             } else if (inputImageBuffer.getDataType() == DataType.FLOAT32) {
-                Log.d(TAG, "Using FLOAT32 buffer directly (may need normalization check)");
                 // Check if values are in [0,1] range or [0,255] range
                 inferenceBuffer = checkAndNormalizeFloat32Buffer(tensorBuffer);
-                Log.d(TAG, "Final buffer size: " + inferenceBuffer.remaining() + " bytes");
             } else {
-                Log.d(TAG, "Using buffer directly");
                 inferenceBuffer = tensorBuffer;
             }
 
@@ -172,24 +151,12 @@ public class BlurDetectionHelper {
             // Get output probabilities
             float[] probabilities = outputProbabilityBuffer.getFloatArray();
             
-            // Log probabilities for debugging
-            Log.d(TAG, "Output probabilities length: " + probabilities.length);
-            for (int i = 0; i < probabilities.length && i < 5; i++) {
-                Log.d(TAG, "probabilities[" + i + "] = " + probabilities[i]);
-            }
-            
             // probabilities[0] = blur probability, probabilities[1] = sharp probability
             double blurConfidence = probabilities.length > 0 ? probabilities[0] : 0.0;
             double sharpConfidence = probabilities.length > 1 ? probabilities[1] : 0.0;
 
-            // Fallback to Laplacian algorithm
-            double laplacianScore = calculateLaplacianBlurScore(bitmap);
-            
-            // Determine if image is blurry TFLite confidence or Laplacian score < 50
-            boolean isBlur = (blurConfidence > sharpConfidence && blurConfidence > 0.99) || (laplacianScore < 50 && sharpConfidence < 0.1);
-            
-            Log.d(TAG, String.format("TFLite Blur Detection - Blur: %.6f, Sharp: %.6f, Label: %s", 
-                    blurConfidence, sharpConfidence, isBlur ? "blur" : "sharp"));
+            // Determine if image is blurry using TFLite confidence
+            boolean isBlur = (blurConfidence >= 0.99 || sharpConfidence < 0.1);
             
             // Return 1.0 for blur, 0.0 for sharp (to maintain double return type)
             return isBlur ? 1.0 : 0.0;
@@ -199,15 +166,9 @@ public class BlurDetectionHelper {
             // Fallback to Laplacian algorithm
             double laplacianScore = calculateLaplacianBlurScore(bitmap);
             boolean isBlur = laplacianScore < 150;
-            Log.d(TAG, String.format("Laplacian Fallback - Score: %.2f, Label: %s", 
-                    laplacianScore, isBlur ? "blur" : "sharp"));
             return isBlur ? 1.0 : 0.0;
         }
     }
-
-
-
-
 
     /**
      * Check if float32 buffer needs normalization and normalize if needed
@@ -227,14 +188,10 @@ public class BlurDetectionHelper {
             maxSample = Math.max(maxSample, value);
         }
         
-        Log.d(TAG, "Sample max value from buffer: " + maxSample);
-        
         // If max value is > 1.5, assume it's in [0,255] range and needs normalization
         if (maxSample > 1.5f) {
-            Log.d(TAG, "Buffer appears to be in [0,255] range, normalizing to [0,1]");
             return normalizeFloat32Buffer(float32Buffer);
         } else {
-            Log.d(TAG, "Buffer appears to be already normalized [0,1]");
             float32Buffer.rewind();
             return float32Buffer;
         }
@@ -254,8 +211,6 @@ public class BlurDetectionHelper {
          float32Buffer.rewind();
          FloatBuffer sourceFloats = float32Buffer.asFloatBuffer();
          
-         Log.d(TAG, "Normalizing float32 buffer: " + sourceFloats.remaining() + " values, target: " + pixelCount);
-         
          while (sourceFloats.hasRemaining() && normalizedFloats.hasRemaining()) {
              float pixelValue = sourceFloats.get();
              float normalizedValue = pixelValue / 255.0f;
@@ -263,7 +218,6 @@ public class BlurDetectionHelper {
          }
          
          normalizedBuffer.rewind();
-         Log.d(TAG, "Normalized buffer created with " + normalizedBuffer.remaining() + " bytes");
          return normalizedBuffer;
      }
 
@@ -282,8 +236,6 @@ public class BlurDetectionHelper {
          // Reset uint8 buffer position
          uint8Buffer.rewind();
          
-         Log.d(TAG, "Converting UINT8 to FLOAT32: " + uint8Buffer.remaining() + " uint8 values to " + pixelCount + " float values");
-         
          // Convert each uint8 pixel to normalized float32
          while (uint8Buffer.hasRemaining() && floatBuffer.hasRemaining()) {
              int pixelValue = uint8Buffer.get() & 0xFF; // Convert to unsigned int
@@ -292,7 +244,6 @@ public class BlurDetectionHelper {
          }
          
          float32Buffer.rewind();
-         Log.d(TAG, "UINT8 to FLOAT32 conversion complete, buffer size: " + float32Buffer.remaining() + " bytes");
          return float32Buffer;
      }
 
@@ -372,7 +323,6 @@ public class BlurDetectionHelper {
             tflite = null;
         }
         isInitialized = false;
-        Log.d(TAG, "TFLite blur detection model closed");
     }
 
     /**
