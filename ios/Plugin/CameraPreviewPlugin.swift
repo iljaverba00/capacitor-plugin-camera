@@ -1245,8 +1245,16 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         }
         
         // Convert base64 string to UIImage
-        let base64String = imageString.hasPrefix("data:") ? 
-            String(imageString.dropFirst(imageString.range(of: ",")!.upperBound)) : imageString
+        let base64String: String
+        if imageString.hasPrefix("data:") {
+            if let commaIndex = imageString.firstIndex(of: ",") {
+                base64String = String(imageString[imageString.index(after: commaIndex)...])
+            } else {
+                base64String = imageString
+            }
+        } else {
+            base64String = imageString
+        }
         
         guard let imageData = Data(base64Encoded: base64String),
               let image = UIImage(data: imageData) else {
