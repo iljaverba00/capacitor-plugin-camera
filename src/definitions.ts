@@ -23,7 +23,11 @@ export interface CameraPreviewPlugin {
   /**
   * take a snapshot as base64.
   */
-  takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{base64:string, blurScore?: number}>;
+  takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{base64:string, isBlur?: boolean}>;
+  /**
+  * analyze an image for blur detection with detailed confidence scores.
+  */
+  detectBlur(options:{image: string}): Promise<{isBlur: boolean, blurConfidence: number, sharpConfidence: number}>;
   /**
   * save a frame internally. Android and iOS only.
   */
@@ -32,7 +36,7 @@ export interface CameraPreviewPlugin {
   * take a snapshot on to a canvas. Web Only
   */
   takeSnapshot2(options:{canvas:HTMLCanvasElement,maxLength?:number}): Promise<{scaleRatio?:number}>;
-  takePhoto(options: {pathToSave?:string,includeBase64?: boolean}): Promise<{path?:string,base64?:string,blob?:Blob, blurScore?: number}>;
+  takePhoto(options: {pathToSave?:string,includeBase64?: boolean}): Promise<{path?:string,base64?:string,blob?:Blob, isBlur?: boolean}>;
   toggleTorch(options: {on: boolean}): Promise<void>;
   /**
   * get the orientation of the device.

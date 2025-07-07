@@ -240,7 +240,7 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
     }
   }
 
-  async takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{ base64: string, blurScore?: number }> {
+  async takeSnapshot(options:{quality?:number, checkBlur?:boolean}): Promise<{ base64: string, isBlur?: boolean }> {
     if (this.camera) {
       let desiredQuality = this.desiredJpegQuality;
       if (options?.quality !== undefined) {
@@ -258,7 +258,7 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
           const blurResult = this.detectBlurWeb(imageData, canvas.width, canvas.height);
           return {
             base64: base64,
-            blurScore: blurResult.blurScore
+            isBlur: blurResult.blurScore < 150
           };
         }
       }
@@ -266,6 +266,64 @@ export class CameraPreviewWeb extends WebPlugin implements CameraPreviewPlugin {
       return {base64: base64};
     }else{
       throw new Error('Camera not initialized');
+    }
+  }
+
+  async detectBlur(options: {image: string}): Promise<{isBlur: boolean, blurConfidence: number, sharpConfidence: number}> {
+    try {
+      // Create image element from base64
+      const img = new Image();
+      
+      return new Promise((resolve, reject) => {
+        img.onload = () => {
+          try {
+            // Create canvas to extract image data
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            if (!ctx) {
+              reject(new Error('Cannot create canvas context'));
+              return;
+            }
+            
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            
+            // Get image data
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const blurResult = this.detectBlurWeb(imageData, canvas.width, canvas.height);
+            
+            // Convert blur score to confidence values
+            // Higher blurScore means sharper image
+            const normalizedScore = Math.max(0, Math.min(1, blurResult.blurScore / 300)); // Normalize to 0-1
+            const sharpConfidence = normalizedScore;
+            const blurConfidence = 1 - normalizedScore;
+            const isBlur = blurResult.blurScore < 150;
+            
+            resolve({
+              isBlur: isBlur,
+              blurConfidence: blurConfidence,
+              sharpConfidence: sharpConfidence
+            });
+          } catch (error) {
+            reject(error);
+          }
+        };
+        
+        img.onerror = () => {
+          reject(new Error('Failed to load image'));
+        };
+        
+        // Handle both data URLs and base64 strings
+        if (options.image.startsWith('data:')) {
+          img.src = options.image;
+        } else {
+          img.src = `data:image/jpeg;base64,${options.image}`;
+        }
+      });
+    } catch (error) {
+      throw new Error(`Failed to detect blur: ${error}`);
     }
   }
 

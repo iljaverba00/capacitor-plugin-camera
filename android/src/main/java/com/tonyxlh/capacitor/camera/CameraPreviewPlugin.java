@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -112,6 +113,7 @@ public class CameraPreviewPlugin extends Plugin {
 
     // Store the desired JPEG quality, set during initialization
     private int desiredJpegQuality = 95; // Default to high quality
+    private BlurDetectionHelper blurDetectionHelper; // TFLite blur detection
 
     @PluginMethod
     public void initialize(PluginCall call) {
@@ -137,6 +139,12 @@ public class CameraPreviewPlugin extends Plugin {
 
             exec = Executors.newSingleThreadExecutor();
             cameraProviderFuture = ProcessCameraProvider.getInstance(getContext());
+            
+            // Initialize TFLite blur detection helper
+            blurDetectionHelper = new BlurDetectionHelper();
+            boolean tfliteInitialized = blurDetectionHelper.initialize(getContext());
+            Log.d("Camera", "TFLite blur detection initialized: " + tfliteInitialized);
+            
             cameraProviderFuture.addListener(() -> {
             try {
                 cameraProvider = cameraProviderFuture.get();
@@ -215,9 +223,9 @@ public class CameraPreviewPlugin extends Plugin {
                         // Only detect blur if checkBlur option is true
                         boolean shouldCheckBlur = takeSnapshotCall.getBoolean("checkBlur", false);
                         if (shouldCheckBlur) {
-                            double blurScore = calculateBlurScore(bitmap);
-                            result.put("blurScore", blurScore);
-                            Log.d("Camera", "Blur detection - Score: " + blurScore);
+                            boolean isBlur = calculateBlurResult(bitmap);
+                            result.put("isBlur", isBlur);
+                            Log.d("Camera", "Blur detection - Label: " + (isBlur ? "blur" : "sharp"));
                         } else {
                             Log.d("Camera", "Blur detection disabled for performance");
                         }
@@ -1294,6 +1302,12 @@ public class CameraPreviewPlugin extends Plugin {
             currentRecording = null;
             Log.d("Camera", "handleOnPause: Camera stopped and references cleared.");
         }
+        
+        // Clean up TFLite resources
+        // if (blurDetectionHelper != null) {
+        //     blurDetectionHelper.close();
+        // }
+        
         super.handleOnPause();
     }
 
@@ -1360,6 +1374,60 @@ public class CameraPreviewPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void detectBlur(PluginCall call) {
+        String imageString = call.getString("image");
+        if (imageString == null) {
+            call.reject("Image parameter is required");
+            return;
+        }
+        
+        try {
+            // Convert base64 string to Bitmap
+            String base64String = imageString;
+            if (imageString.startsWith("data:")) {
+                base64String = imageString.substring(imageString.indexOf(",") + 1);
+            }
+            
+            byte[] decodedBytes = Base64.decode(base64String, Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+            
+            if (bitmap == null) {
+                call.reject("Invalid image data");
+                return;
+            }
+            
+            // Use the new confidence detection method
+            if (blurDetectionHelper != null && blurDetectionHelper.isInitialized()) {
+                java.util.Map<String, Object> result = blurDetectionHelper.detectBlurWithConfidence(bitmap);
+                
+                JSObject jsResult = new JSObject();
+                jsResult.put("isBlur", result.get("isBlur"));
+                jsResult.put("blurConfidence", result.get("blurConfidence"));
+                jsResult.put("sharpConfidence", result.get("sharpConfidence"));
+                
+                call.resolve(jsResult);
+            } else {
+                // Fallback to Laplacian algorithm with confidence scores
+                double laplacianScore = calculateLaplacianBlurScore(bitmap);
+                boolean isBlur = laplacianScore < 150;
+                double normalizedScore = Math.max(0.0, Math.min(1.0, laplacianScore / 300.0));
+                double sharpConfidence = normalizedScore;
+                double blurConfidence = 1.0 - normalizedScore;
+                
+                JSObject result = new JSObject();
+                result.put("isBlur", isBlur);
+                result.put("blurConfidence", blurConfidence);
+                result.put("sharpConfidence", sharpConfidence);
+                
+                call.resolve(result);
+            }
+            
+        } catch (Exception e) {
+            call.reject("Failed to process image: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void getOrientation(PluginCall call) {
         int orientation = getContext().getResources().getConfiguration().orientation;
         JSObject result = new JSObject();
@@ -1372,10 +1440,27 @@ public class CameraPreviewPlugin extends Plugin {
     }
 
     /**
-     * Calculate blur score using Laplacian variance algorithm
-     * Higher values indicate sharper images
+     * Calculate if image is blurry using TFLite model (with Laplacian fallback)
+     * Returns true if blurry, false if sharp
      */
-    private double calculateBlurScore(Bitmap bitmap) {
+    private boolean calculateBlurResult(Bitmap bitmap) {
+        if (bitmap == null) return false;
+        
+        // Use TFLite model if available, otherwise fallback to Laplacian
+        if (blurDetectionHelper != null && blurDetectionHelper.isInitialized()) {
+            return blurDetectionHelper.isBlurry(bitmap);
+        } else {
+            // Fallback to original Laplacian algorithm
+            double laplacianScore = calculateLaplacianBlurScore(bitmap);
+            return laplacianScore < 50;
+        }
+    }
+    
+    /**
+     * Original Laplacian blur detection (fallback)
+     * Returns raw Laplacian variance score (will be converted to percentage by BlurDetectionHelper)
+     */
+    private double calculateLaplacianBlurScore(Bitmap bitmap) {
         if (bitmap == null) return 0.0;
         
         int width = bitmap.getWidth();
