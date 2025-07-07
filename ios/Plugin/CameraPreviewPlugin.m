@@ -26,4 +26,6 @@ CAP_PLUGIN(CameraPreviewPlugin, "CameraPreview",
            CAP_PLUGIN_METHOD(requestCameraPermission, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(requestMicroPhonePermission, CAPPluginReturnPromise);
            CAP_PLUGIN_METHOD(isOpen, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(detectBlur, CAPPluginReturnPromise);
+           CAP_PLUGIN_METHOD(resetFocus, CAPPluginReturnPromise);
 )
