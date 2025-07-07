@@ -312,8 +312,8 @@ detectBlur(options: { image: string; }) => Promise<{ isBlur: boolean; blurConfid
 
 analyze an image for blur detection with detailed confidence scores.
 
-| Param         | Type                             |
-| ------------- | -------------------------------- |
+| Param         | Type                            |
+| ------------- | ------------------------------- |
 | **`options`** | <code>{ image: string; }</code> |
 
 **Returns:** <code>Promise&lt;{ isBlur: boolean; blurConfidence: number; sharpConfidence: number; }&gt;</code>
