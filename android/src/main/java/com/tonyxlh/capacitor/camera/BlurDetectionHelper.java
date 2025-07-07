@@ -294,6 +294,87 @@ public class BlurDetectionHelper {
     }
 
     /**
+     * Detect blur with detailed confidence scores
+     * @param bitmap Input image bitmap
+     * @return Map with isBlur, blurConfidence, and sharpConfidence
+     */
+    public java.util.Map<String, Object> detectBlurWithConfidence(Bitmap bitmap) {
+        java.util.Map<String, Object> result = new java.util.HashMap<>();
+        
+        if (!isInitialized || tflite == null) {
+            Log.w(TAG, "TFLite model not initialized, falling back to Laplacian");
+            double laplacianScore = calculateLaplacianBlurScore(bitmap);
+            boolean isBlur = laplacianScore < 150;
+            double normalizedScore = Math.max(0.0, Math.min(1.0, laplacianScore / 300.0));
+            double sharpConfidence = normalizedScore;
+            double blurConfidence = 1.0 - normalizedScore;
+            
+            result.put("isBlur", isBlur);
+            result.put("blurConfidence", blurConfidence);
+            result.put("sharpConfidence", sharpConfidence);
+            return result;
+        }
+
+        try {
+            // Use the original bitmap directly (no image enhancement)
+            Bitmap processedBitmap = bitmap;
+            
+            // Preprocess image for model (resize and potential enhancement)
+            inputImageBuffer.load(processedBitmap);
+            inputImageBuffer = imageProcessor.process(inputImageBuffer);
+
+            // Get tensor buffer
+            ByteBuffer tensorBuffer = inputImageBuffer.getBuffer();
+
+            // Check if we need normalization based on data types
+            ByteBuffer inferenceBuffer;
+            if (inputImageBuffer.getDataType() == DataType.UINT8 && tflite.getInputTensor(0).dataType() == DataType.FLOAT32) {
+                inferenceBuffer = normalizeImageBuffer(tensorBuffer);
+            } else if (inputImageBuffer.getDataType() == DataType.FLOAT32) {
+                // Check if values are in [0,1] range or [0,255] range
+                inferenceBuffer = checkAndNormalizeFloat32Buffer(tensorBuffer);
+            } else {
+                inferenceBuffer = tensorBuffer;
+            }
+
+            // Run inference
+            tflite.run(inferenceBuffer, outputProbabilityBuffer.getBuffer().rewind());
+
+            // Get output probabilities
+            float[] probabilities = outputProbabilityBuffer.getFloatArray();
+            
+            // probabilities[0] = blur probability, probabilities[1] = sharp probability
+            double blurConfidence = probabilities.length > 0 ? probabilities[0] : 0.0;
+            double sharpConfidence = probabilities.length > 1 ? probabilities[1] : 0.0;
+
+            // Determine if image is blurry using TFLite confidence
+            boolean isBlur = (blurConfidence >= 0.99 || sharpConfidence < 0.1);
+            
+            Log.d(TAG, String.format("TFLite Blur Detection with Confidence - Blur: %.6f, Sharp: %.6f, Label: %s",
+                    blurConfidence, sharpConfidence, isBlur ? "blur" : "sharp"));
+            
+            result.put("isBlur", isBlur);
+            result.put("blurConfidence", blurConfidence);
+            result.put("sharpConfidence", sharpConfidence);
+            return result;
+            
+        } catch (Exception e) {
+            Log.e(TAG, "Error during TFLite inference: " + e.getMessage(), e);
+            // Fallback to Laplacian algorithm
+            double laplacianScore = calculateLaplacianBlurScore(bitmap);
+            boolean isBlur = laplacianScore < 150;
+            double normalizedScore = Math.max(0.0, Math.min(1.0, laplacianScore / 300.0));
+            double sharpConfidence = normalizedScore;
+            double blurConfidence = 1.0 - normalizedScore;
+            
+            result.put("isBlur", isBlur);
+            result.put("blurConfidence", blurConfidence);
+            result.put("sharpConfidence", sharpConfidence);
+            return result;
+        }
+    }
+
+    /**
      * Check if image is blurry
      * @param bitmap Input image
      * @return true if image is blurry, false if sharp

@@ -1238,6 +1238,42 @@ public class CameraPreviewPlugin: CAPPlugin, AVCaptureVideoDataOutputSampleBuffe
         takePhotoWithAVFoundation()
     }
     
+    @objc func detectBlur(_ call: CAPPluginCall) {
+        guard let imageString = call.getString("image") else {
+            call.reject("Image parameter is required")
+            return
+        }
+        
+        // Convert base64 string to UIImage
+        let base64String = imageString.hasPrefix("data:") ? 
+            String(imageString.dropFirst(imageString.range(of: ",")!.upperBound)) : imageString
+        
+        guard let imageData = Data(base64Encoded: base64String),
+              let image = UIImage(data: imageData) else {
+            call.reject("Invalid image data")
+            return
+        }
+        
+        // Use the new confidence detection method
+        if let helper = blurDetectionHelper, helper.getIsInitialized() {
+            let result = helper.detectBlurWithConfidence(image: image)
+            call.resolve(result)
+        } else {
+            // Fallback to Laplacian algorithm with confidence scores
+            let laplacianScore = calculateLaplacianBlurScore(image: image)
+            let isBlur = laplacianScore < 150
+            let normalizedScore = max(0.0, min(1.0, laplacianScore / 300.0))
+            let sharpConfidence = normalizedScore
+            let blurConfidence = 1.0 - normalizedScore
+            
+            call.resolve([
+                "isBlur": isBlur,
+                "blurConfidence": blurConfidence,
+                "sharpConfidence": sharpConfidence
+            ])
+        }
+    }
+    
     deinit {
         NotificationCenter.default.removeObserver(self)
         focusCompletionTimer?.invalidate()

@@ -257,6 +257,90 @@ class BlurDetectionHelper {
 
 
     /**
+     * Detect blur with detailed confidence scores
+     * @param image Input UIImage
+     * @return Dictionary with isBlur, blurConfidence, and sharpConfidence
+     */
+    func detectBlurWithConfidence(image: UIImage) -> [String: Any] {
+        guard isInitialized, let interpreter = interpreter else {
+            let laplacianScore = calculateLaplacianBlurScore(image: image)
+            let isBlur = laplacianScore < 150
+            let normalizedScore = max(0.0, min(1.0, laplacianScore / 300.0))
+            let sharpConfidence = normalizedScore
+            let blurConfidence = 1.0 - normalizedScore
+            
+            return [
+                "isBlur": isBlur,
+                "blurConfidence": blurConfidence,
+                "sharpConfidence": sharpConfidence
+            ]
+        }
+        
+        do {
+            // Preprocess image for model input
+            guard let inputData = preprocessImage(image) else {
+                print("\(Self.TAG): Error preprocessing image")
+                let laplacianScore = calculateLaplacianBlurScore(image: image)
+                let isBlur = laplacianScore < 150
+                let normalizedScore = max(0.0, min(1.0, laplacianScore / 300.0))
+                let sharpConfidence = normalizedScore
+                let blurConfidence = 1.0 - normalizedScore
+                
+                return [
+                    "isBlur": isBlur,
+                    "blurConfidence": blurConfidence,
+                    "sharpConfidence": sharpConfidence
+                ]
+            }
+            
+            // Copy input data to interpreter
+            try interpreter.copy(inputData, toInputAt: 0)
+            
+            // Run inference
+            try interpreter.invoke()
+            
+            // Get output data
+            let outputTensor = try interpreter.output(at: 0)
+            let outputData = outputTensor.data
+            
+            // Parse output probabilities (assuming float32 output)
+            let probabilities = outputData.withUnsafeBytes { bytes in
+                Array(bytes.bindMemory(to: Float32.self))
+            }
+            
+            // probabilities[0] = blur probability, probabilities[1] = sharp probability
+            let blurConfidence = probabilities.count > 0 ? Double(probabilities[0]) : 0.0
+            let sharpConfidence = probabilities.count > 1 ? Double(probabilities[1]) : 0.0
+            
+            // Determine if image is blurry using TFLite confidence
+            let isBlur = (blurConfidence >= 0.99 || sharpConfidence < 0.1)
+
+            print("\(Self.TAG): TFLite Blur Detection with Confidence - Blur: \(String(format: "%.6f", blurConfidence)), Sharp: \(String(format: "%.6f", sharpConfidence)), Label: \(isBlur ? "blur" : "sharp")")
+            
+            return [
+                "isBlur": isBlur,
+                "blurConfidence": blurConfidence,
+                "sharpConfidence": sharpConfidence
+            ]
+            
+        } catch {
+            print("\(Self.TAG): Error during TFLite inference: \(error)")
+            // Fallback to Laplacian algorithm
+            let laplacianScore = calculateLaplacianBlurScore(image: image)
+            let isBlur = laplacianScore < 150
+            let normalizedScore = max(0.0, min(1.0, laplacianScore / 300.0))
+            let sharpConfidence = normalizedScore
+            let blurConfidence = 1.0 - normalizedScore
+            
+            return [
+                "isBlur": isBlur,
+                "blurConfidence": blurConfidence,
+                "sharpConfidence": sharpConfidence
+            ]
+        }
+    }
+
+    /**
      * Check if image is blurry
      * @param image Input image
      * @return true if image is blurry, false if sharp

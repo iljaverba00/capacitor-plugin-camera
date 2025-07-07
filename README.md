@@ -105,6 +105,7 @@ document.documentElement.style.setProperty('--ion-background-color', 'transparen
 * [`startCamera()`](#startcamera)
 * [`stopCamera()`](#stopcamera)
 * [`takeSnapshot(...)`](#takesnapshot)
+* [`detectBlur(...)`](#detectblur)
 * [`saveFrame()`](#saveframe)
 * [`takeSnapshot2(...)`](#takesnapshot2)
 * [`takePhoto(...)`](#takephoto)
@@ -289,7 +290,7 @@ stopCamera() => Promise<void>
 ### takeSnapshot(...)
 
 ```typescript
-takeSnapshot(options: { quality?: number; checkBlur?: boolean; }) => Promise<{ base64: string; blurScore?: number; }>
+takeSnapshot(options: { quality?: number; checkBlur?: boolean; }) => Promise<{ base64: string; isBlur?: boolean; }>
 ```
 
 take a snapshot as base64.
@@ -298,7 +299,24 @@ take a snapshot as base64.
 | ------------- | ------------------------------------------------------- |
 | **`options`** | <code>{ quality?: number; checkBlur?: boolean; }</code> |
 
-**Returns:** <code>Promise&lt;{ base64: string; blurScore?: number; }&gt;</code>
+**Returns:** <code>Promise&lt;{ base64: string; isBlur?: boolean; }&gt;</code>
+
+--------------------
+
+
+### detectBlur(...)
+
+```typescript
+detectBlur(options: { image: string; }) => Promise<{ isBlur: boolean; blurConfidence: number; sharpConfidence: number; }>
+```
+
+analyze an image for blur detection with detailed confidence scores.
+
+| Param         | Type                             |
+| ------------- | -------------------------------- |
+| **`options`** | <code>{ image: string; }</code> |
+
+**Returns:** <code>Promise&lt;{ isBlur: boolean; blurConfidence: number; sharpConfidence: number; }&gt;</code>
 
 --------------------
 
@@ -336,14 +354,14 @@ take a snapshot on to a canvas. Web Only
 ### takePhoto(...)
 
 ```typescript
-takePhoto(options: { pathToSave?: string; includeBase64?: boolean; }) => Promise<{ path?: string; base64?: string; blob?: Blob; blurScore?: number; }>
+takePhoto(options: { pathToSave?: string; includeBase64?: boolean; }) => Promise<{ path?: string; base64?: string; blob?: Blob; isBlur?: boolean; }>
 ```
 
 | Param         | Type                                                           |
 | ------------- | -------------------------------------------------------------- |
 | **`options`** | <code>{ pathToSave?: string; includeBase64?: boolean; }</code> |
 
-**Returns:** <code>Promise&lt;{ path?: string; base64?: string; blob?: any; blurScore?: number; }&gt;</code>
+**Returns:** <code>Promise&lt;{ path?: string; base64?: string; blob?: any; isBlur?: boolean; }&gt;</code>
 
 --------------------
 
@@ -520,9 +538,34 @@ measuredByPercentage: 0 in pixel, 1 in percent
 
 ## Blur Detection
 
-The plugin includes blur detection capabilities using the Laplacian variance algorithm, providing consistent results across all platforms.
+The plugin includes blur detection capabilities using TensorFlow Lite models with Laplacian variance fallback, providing consistent results across all platforms.
 
-#### Basic Usage
+#### Analyze Existing Images
+
+Use the `detectBlur` method to analyze any base64 image with detailed confidence scores:
+
+```typescript
+// Analyze an existing image (base64 string or data URL)
+const result = await CameraPreview.detectBlur({
+  image: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD..."
+  // or just the base64 string: "/9j/4AAQSkZJRgABAQEASABIAAD..."
+});
+
+console.log('Is Blurry:', result.isBlur);           // boolean: true/false
+console.log('Blur Confidence:', result.blurConfidence);   // 0.0-1.0 (higher = more blurry)  
+console.log('Sharp Confidence:', result.sharpConfidence); // 0.0-1.0 (higher = more sharp)
+
+// Use confidence scores for advanced logic
+if (result.blurConfidence > 0.7) {
+  console.log('High confidence this image is blurry');
+} else if (result.sharpConfidence > 0.8) {
+  console.log('High confidence this image is sharp');
+} else {
+  console.log('Uncertain blur status - manual review needed');
+}
+```
+
+#### Basic Usage (Capture + Detection)
 
 ```typescript
 // Take a snapshot with blur detection
@@ -562,14 +605,35 @@ const resultWithBlur = await CameraPreview.takeSnapshot({
 });
 ```
 
-#### Understanding Blur Scores
+#### Understanding Blur Results
 
+**New `detectBlur` Method (Recommended):**
+- Returns standardized **confidence scores** (0.0-1.0 range) across all platforms
+- `blurConfidence`: Higher values indicate more blur (>0.7 = likely blurry)
+- `sharpConfidence`: Higher values indicate more sharpness (>0.8 = likely sharp)  
+- `isBlur`: Simple boolean result based on confidence thresholds
+
+**Legacy `takeSnapshot` Method:**
 - **Higher values** = Sharper images
 - **Lower values** = Blurrier images
 - **Threshold guidelines**: 
   - iOS: Consider values below `0.001` as blurry
   - Android/Web: Consider values below `50-100` as blurry
   - Adjust thresholds based on your specific quality requirements
+
+#### When to Use Which Method
+
+**Use `detectBlur` for:**
+- Analyzing already captured images
+- Batch processing multiple images  
+- Getting detailed confidence scores for advanced decision logic
+- Post-processing workflows
+- When you need consistent confidence values across platforms
+
+**Use `takeSnapshot` with `checkBlur: true` for:**
+- Real-time capture with immediate blur feedback
+- Simple blur detection during image capture
+- When you only need a basic blur/sharp indication
 
 #### Performance Impact
 
@@ -581,8 +645,10 @@ const resultWithBlur = await CameraPreview.takeSnapshot({
 
 #### Implementation Notes
 
-- Uses Laplacian variance algorithm across all platforms
-- Pixel sampling for performance optimization
+- **TensorFlow Lite models** for advanced blur detection with high accuracy
+- **Laplacian variance fallback** when TFLite models unavailable
+- Pixel sampling for performance optimization  
 - Hardware acceleration on iOS with Core Image
 - Client-side threshold logic for maximum flexibility
 - Cross-platform algorithm consistency
+- **Dual API**: `takeSnapshot` for capture+detection, `detectBlur` for analyzing existing images

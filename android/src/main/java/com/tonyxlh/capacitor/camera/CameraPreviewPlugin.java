@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
@@ -1369,6 +1370,60 @@ public class CameraPreviewPlugin extends Plugin {
             call.resolve();
         }else {
             call.reject("Permission not granted.");
+        }
+    }
+
+    @PluginMethod
+    public void detectBlur(PluginCall call) {
+        String imageString = call.getString("image");
+        if (imageString == null) {
+            call.reject("Image parameter is required");
+            return;
+        }
+        
+        try {
+            // Convert base64 string to Bitmap
+            String base64String = imageString;
+            if (imageString.startsWith("data:")) {
+                base64String = imageString.substring(imageString.indexOf(",") + 1);
+            }
+            
+            byte[] decodedBytes = Base64.decode(base64String, Base64.DEFAULT);
+            Bitmap bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+            
+            if (bitmap == null) {
+                call.reject("Invalid image data");
+                return;
+            }
+            
+            // Use the new confidence detection method
+            if (blurDetectionHelper != null && blurDetectionHelper.isInitialized()) {
+                java.util.Map<String, Object> result = blurDetectionHelper.detectBlurWithConfidence(bitmap);
+                
+                JSObject jsResult = new JSObject();
+                jsResult.put("isBlur", result.get("isBlur"));
+                jsResult.put("blurConfidence", result.get("blurConfidence"));
+                jsResult.put("sharpConfidence", result.get("sharpConfidence"));
+                
+                call.resolve(jsResult);
+            } else {
+                // Fallback to Laplacian algorithm with confidence scores
+                double laplacianScore = calculateLaplacianBlurScore(bitmap);
+                boolean isBlur = laplacianScore < 150;
+                double normalizedScore = Math.max(0.0, Math.min(1.0, laplacianScore / 300.0));
+                double sharpConfidence = normalizedScore;
+                double blurConfidence = 1.0 - normalizedScore;
+                
+                JSObject result = new JSObject();
+                result.put("isBlur", isBlur);
+                result.put("blurConfidence", blurConfidence);
+                result.put("sharpConfidence", sharpConfidence);
+                
+                call.resolve(result);
+            }
+            
+        } catch (Exception e) {
+            call.reject("Failed to process image: " + e.getMessage());
         }
     }
 
