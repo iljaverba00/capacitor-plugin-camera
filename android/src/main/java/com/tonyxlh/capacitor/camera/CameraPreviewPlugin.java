@@ -1112,7 +1112,8 @@ public class CameraPreviewPlugin extends Plugin {
                 }
                 File file;
                 if (call.hasOption("pathToSave")) {
-                    file = new File(call.getString("pathToSave"));
+                    String ppath = getContext().getDataDir() + "/files/"+ call.getString("pathToSave");
+                    file = new File(ppath);
                 } else {
                     File dir = getContext().getExternalCacheDir();
                     file = new File(dir, new Date().getTime() + ".jpg");
