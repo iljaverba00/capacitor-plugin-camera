@@ -82,6 +82,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -161,8 +162,7 @@ public class CameraPreviewPlugin extends Plugin {
                 cameraProviderFuture.addListener(() -> {
                     try {
                         cameraProvider = cameraProviderFuture.get();
-                        cameraSelector = new CameraSelector.Builder()
-                                .requireLensFacing(CameraSelector.LENS_FACING_BACK).build();
+                        cameraSelector = createBackCameraSelector();
                         // Auto-optimize for photo capture on initialization with specified quality
                         setupUseCases(false); // Always use photo-optimized mode
                         Log.d("Camera", "Initialized with photo capture optimization and quality: " + desiredJpegQuality);
@@ -182,19 +182,19 @@ public class CameraPreviewPlugin extends Plugin {
         isUsingWide = !isUsingWide;
 
         getActivity().runOnUiThread(new Runnable() {
-             @RequiresApi(api = Build.VERSION_CODES.P)
-             public void run() {
-                 if (camera != null) {
-                     if (camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
-                         cameraSelector = createBackCameraSelector();
-                         cameraProvider.unbindAll();
-                         setupUseCases(false);
-                         camera = cameraProvider.bindToLifecycle((LifecycleOwner) getContext(), cameraSelector, useCaseGroup);
-                         triggerOnPlayed();
-                     }
-                 }
-             }
-         });
+            @RequiresApi(api = Build.VERSION_CODES.P)
+            public void run() {
+                if (camera != null) {
+                    if (camera.getCameraInfo().getCameraState().getValue().getType() == CameraState.Type.OPEN) {
+                        cameraSelector = createBackCameraSelector();
+                        cameraProvider.unbindAll();
+                        setupUseCases(false);
+                        camera = cameraProvider.bindToLifecycle((LifecycleOwner) getContext(), cameraSelector, useCaseGroup);
+                        triggerOnPlayed();
+                    }
+                }
+            }
+        });
     }
 
     @OptIn(markerClass = ExperimentalCamera2Interop.class)
@@ -209,7 +209,7 @@ public class CameraPreviewPlugin extends Plugin {
                             result.add(cameraInfo);
                         }
                     }
-                    if (!result.isEmpty() && isUsingWide){
+                    if (!result.isEmpty() && isUsingWide) {
                         return result;
                     }
                     return cameras;
@@ -219,28 +219,76 @@ public class CameraPreviewPlugin extends Plugin {
 
     private void chooseRightCamera() {
         CameraManager cameraManager = (CameraManager) getContext().getSystemService(Context.CAMERA_SERVICE);
+
         try {
             for (String cameraId : cameraManager.getCameraIdList()) {
                 CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
-                Integer lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
-                if (lensFacing != null && lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
-                    float[] focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
-                    SizeF physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
 
-                    if (focalLengths != null && focalLengths.length > 0) {
-                        Log.d("CameraDebug", "Camera " + cameraId + " focalLength: " + focalLengths[0]);
-                        // Типично: если focalLength < 2.0, это широкоугольная
-                        if (focalLengths[0] < 2.0f) {
-                            wideAngleCameraId = cameraId;
+
+                Integer lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING);
+                if (lensFacing == null || lensFacing != CameraCharacteristics.LENS_FACING_BACK) {
+                    continue; // Пропускаем фронтальные или неизвестные камеры
+                }
+
+
+                int[] capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+                boolean isLogical = false;
+                if (capabilities != null) {
+                    for (int cap : capabilities) {
+                        if (cap == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) {
+                            isLogical = true;
                             break;
                         }
                     }
                 }
+
+                if (isLogical) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        Set<String> physicalCameraIds = characteristics.getPhysicalCameraIds();
+                        float[] focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                        SizeF physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+
+                        if (focalLengths != null && focalLengths.length > 0) {
+                            float focalLength = focalLengths[0];
+                            Log.d("CameraDebug", String.format("CameraID: %s | FocalLength: %.2f | SensorSize: %.1fx%.1f",
+                                    cameraId, focalLength, physicalSize.getWidth(), physicalSize.getHeight()));
+
+                            // Типичный признак широкоугольной камеры
+                            if (focalLength < 2.0f) {
+                                wideAngleCameraId = cameraId;
+                                Log.d("CameraDebug", "Selected wide-angle camera: " + wideAngleCameraId);
+                                return;
+                            }
+                        }
+                    }
+                }
+                else {
+
+                    float[] focalLengths = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+                    SizeF physicalSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+
+                    if (focalLengths != null && focalLengths.length > 0) {
+                        float focalLength = focalLengths[0];
+                        Log.d("CameraDebug", String.format("CameraID: %s | FocalLength: %.2f | SensorSize: %.1fx%.1f",
+                                cameraId, focalLength, physicalSize.getWidth(), physicalSize.getHeight()));
+
+                        // Типичный признак широкоугольной камеры
+                        if (focalLength < 2.0f) {
+                            wideAngleCameraId = cameraId;
+                            Log.d("CameraDebug", "Selected wide-angle camera: " + wideAngleCameraId);
+                            return;
+                        }
+                    }
+                }
             }
+
+            Log.w("CameraDebug", "No wide-angle back camera found.");
+
         } catch (CameraAccessException e) {
-            e.printStackTrace();
+            Log.e("CameraDebug", "Camera access error", e);
         }
     }
+
 
     private void setupUseCases(boolean enableVideo) {
         // Auto-detect maximum resolution for better zoom quality
